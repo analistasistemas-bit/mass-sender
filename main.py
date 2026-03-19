@@ -12,10 +12,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
-from models import Campaign, Contact, SendLog
+from models import Campaign, Contact
 from schemas import CampaignCreate, TemplateUpdate
 from services.campaign_service import (
     add_manual_contact,
+    build_activity_payload,
+    build_results_payload,
     cancel_campaign,
     create_campaign,
     delete_contact_from_campaign,
@@ -237,15 +239,13 @@ def campaign_page(
     campaign_id: int,
     request: Request,
     page: int = Query(1, ge=1),
+    per_page: int = Query(25),
     status: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     campaign = get_campaign_or_404(db, campaign_id)
-    logs = db.scalars(
-        select(SendLog).where(SendLog.campaign_id == campaign_id).order_by(SendLog.created_at.desc()).limit(30)
-    ).all()
     stats = stats_payload(db, campaign_id)
-    page_size = 100
+    page_size = per_page if per_page in {10, 25, 50} else 25
     status_filter = (status or '').strip().lower()
     allowed_status = {'pending', 'processing', 'sent', 'failed', 'invalid'}
     if status_filter not in allowed_status:
@@ -269,7 +269,6 @@ def campaign_page(
             'request': request,
             'campaign': campaign,
             'stats': stats,
-            'logs': logs,
             'contacts': contacts,
             'contacts_page': page,
             'contacts_total_pages': total_pages,
@@ -284,11 +283,12 @@ def campaign_page(
 def campaign_contacts_route(
     campaign_id: int,
     page: int = Query(1, ge=1),
+    per_page: int = Query(25),
     status: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     get_campaign_or_404(db, campaign_id)
-    page_size = 100
+    page_size = per_page if per_page in {10, 25, 50} else 25
     status_filter = (status or '').strip().lower()
     allowed_status = {'pending', 'processing', 'sent', 'failed', 'invalid'}
     if status_filter not in allowed_status:
@@ -482,6 +482,16 @@ def cancel_route(campaign_id: int, db: Session = Depends(get_db)):
 @app.get('/campaigns/{campaign_id}/stats', dependencies=[Depends(require_auth)])
 def stats_route(campaign_id: int, db: Session = Depends(get_db)):
     return JSONResponse(stats_payload(db, campaign_id))
+
+
+@app.get('/campaigns/{campaign_id}/overview', dependencies=[Depends(require_auth)])
+def campaign_overview_route(campaign_id: int, db: Session = Depends(get_db)):
+    return JSONResponse(
+        {
+            'results': build_results_payload(db, campaign_id),
+            'activity': build_activity_payload(db, campaign_id),
+        }
+    )
 
 
 @app.get('/campaigns/{campaign_id}/failures/export', dependencies=[Depends(require_auth)])

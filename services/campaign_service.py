@@ -52,6 +52,75 @@ def get_campaign_or_404(db: Session, campaign_id: int) -> Campaign:
     return campaign
 
 
+def _friendly_failure_reason(reason: Optional[str]) -> str:
+    text = (reason or '').strip()
+    lowered = text.lower()
+    mapping = {
+        'number_resolution_failed': 'Numero nao disponivel no WhatsApp',
+        'bridge_unreachable': 'Sistema de envio indisponivel',
+        'temporary': 'Falha temporaria',
+        'permanent': 'Falha permanente',
+    }
+    for key, label in mapping.items():
+        if key in lowered:
+            return label
+    if not text:
+        return 'Falha sem detalhe'
+    return text[:90]
+
+
+def _friendly_event_title(event_type: str) -> str:
+    mapping = {
+        'campaign_state_change': 'Mudanca de estado',
+        'retry_scheduled': 'Nova tentativa agendada',
+        'send_failure': 'Falha de envio',
+        'send_success': 'Envio concluido',
+        'send_attempt': 'Tentativa de envio',
+    }
+    return mapping.get(event_type, event_type.replace('_', ' ').capitalize())
+
+
+def _friendly_event_summary(log: SendLog) -> str:
+    if log.event_type == 'campaign_state_change':
+        text = (log.payload_excerpt or '').strip()
+        if not text:
+            return 'Campanha atualizada.'
+        return text[:140]
+    if log.event_type == 'retry_scheduled':
+        return 'Houve uma falha temporaria e o sistema programou nova tentativa.'
+    if log.event_type == 'send_failure':
+        return _friendly_failure_reason(log.payload_excerpt)
+    if log.event_type == 'send_success':
+        return 'Mensagem entregue com sucesso.'
+    return (log.payload_excerpt or 'Sem detalhes adicionais.')[:140]
+
+
+def _activity_tone(event_type: str) -> str:
+    if event_type == 'send_failure':
+        return 'error'
+    if event_type == 'retry_scheduled':
+        return 'warn'
+    if event_type == 'send_success':
+        return 'success'
+    return 'info'
+
+
+def _campaign_milestone_from_state(payload_excerpt: Optional[str]) -> Optional[dict]:
+    text = (payload_excerpt or '').strip().lower()
+    mapping = [
+        ('campaign completed', {'title': 'Campanha concluida', 'summary': 'A campanha terminou e encerrou a fila atual.', 'tone': 'success'}),
+        ('campaign resumed', {'title': 'Campanha retomada', 'summary': 'O envio voltou a processar a fila a partir do ponto de pausa.', 'tone': 'info'}),
+        ('campaign paused', {'title': 'Campanha pausada', 'summary': 'A operacao foi interrompida temporariamente pelo operador.', 'tone': 'warn'}),
+        ('campaign cancelled', {'title': 'Campanha cancelada', 'summary': 'A fila foi interrompida antes da conclusao.', 'tone': 'error'}),
+        ('campaign running', {'title': 'Campanha iniciada', 'summary': 'O envio real foi liberado e a campanha entrou em execucao.', 'tone': 'info'}),
+        ('campaign restarted', {'title': 'Campanha reiniciada', 'summary': 'A fila foi recriada para uma nova tentativa operacional.', 'tone': 'warn'}),
+    ]
+    for key, item in mapping:
+        if key in text:
+            return item
+    return None
+
+
 def upload_contacts(db: Session, campaign_id: int, payload: bytes) -> dict:
     campaign = get_campaign_or_404(db, campaign_id)
     parsed = parse_csv_bytes(payload)
@@ -380,6 +449,193 @@ def export_failures_csv(db: Session, campaign_id: int) -> bytes:
     for c in contacts:
         writer.writerow([c.name, c.phone_raw, c.phone_e164 or '', c.email, c.status, c.error_message or '', c.attempt_count])
     return stream.getvalue().encode('utf-8')
+
+
+def build_results_payload(db: Session, campaign_id: int) -> dict:
+    campaign = get_campaign_or_404(db, campaign_id)
+    refresh_campaign_counters(db, campaign.id)
+    db.flush()
+
+    processed = int(campaign.sent_count + campaign.failed_count)
+    success_rate = round((campaign.sent_count / processed) * 100, 1) if processed else 0.0
+    failure_rate = round((campaign.failed_count / processed) * 100, 1) if processed else 0.0
+    coverage_rate = round((processed / campaign.valid_contacts) * 100, 1) if campaign.valid_contacts else 0.0
+
+    duration_seconds = 0
+    if campaign.started_at:
+        end_at = campaign.finished_at or now_utc()
+        duration_seconds = max(0, int((end_at - campaign.started_at).total_seconds()))
+
+    failure_rows = db.execute(
+        select(Contact.error_message, func.count(Contact.id))
+        .where(Contact.campaign_id == campaign.id, Contact.status.in_(['failed', 'invalid']))
+        .group_by(Contact.error_message)
+        .order_by(func.count(Contact.id).desc())
+        .limit(4)
+    ).all()
+    top_failures = [
+        {
+            'label': _friendly_failure_reason(message),
+            'count': int(count or 0),
+            'tone': 'error' if 'invalid' not in str(message or '').lower() else 'warn',
+        }
+        for message, count in failure_rows
+    ]
+
+    if campaign.status == 'completed':
+        headline = 'Campanha concluida'
+        summary = (
+            'Resultado final sem incidentes relevantes.'
+            if campaign.failed_count == 0
+            else 'A campanha terminou, mas houve contatos com falha que pedem revisao.'
+        )
+    elif campaign.status == 'running':
+        headline = 'Campanha em andamento'
+        summary = 'A execucao segue ativa. Use esta secao para acompanhar cobertura e falhas sem abrir os detalhes tecnicos.'
+    elif campaign.pending_count > 0 and processed > 0:
+        headline = 'Fila reaberta'
+        summary = 'Os contatos ja processados permanecem no historico, enquanto a nova fila aguarda o proximo envio.'
+    else:
+        headline = 'Resultados parciais'
+        summary = 'Os indicadores abaixo ajudam a decidir o proximo passo da operacao.'
+
+    return {
+        'headline': headline,
+        'summary': summary,
+        'processed': processed,
+        'success_rate': success_rate,
+        'failure_rate': failure_rate,
+        'coverage_rate': coverage_rate,
+        'duration_seconds': duration_seconds,
+        'distribution': {
+            'sent': int(campaign.sent_count),
+            'failed': int(campaign.failed_count),
+            'pending': int(campaign.pending_count),
+            'invalid': int(campaign.invalid_contacts),
+            'valid': int(campaign.valid_contacts),
+            'total': int(campaign.total_contacts),
+        },
+        'top_failures': top_failures,
+        'started_at': campaign.started_at.isoformat() if campaign.started_at else None,
+        'finished_at': campaign.finished_at.isoformat() if campaign.finished_at else None,
+    }
+
+
+def build_activity_payload(db: Session, campaign_id: int) -> dict:
+    campaign = get_campaign_or_404(db, campaign_id)
+    refresh_campaign_counters(db, campaign.id)
+    db.flush()
+
+    grouped_rows = db.execute(
+        select(SendLog.event_type, func.count(SendLog.id))
+        .where(SendLog.campaign_id == campaign_id)
+        .group_by(SendLog.event_type)
+    ).all()
+    event_counts = {event_type: int(count or 0) for event_type, count in grouped_rows}
+    total_events = int(sum(event_counts.values()))
+
+    summary_cards = [
+        {'key': 'state', 'label': 'Mudancas de estado', 'count': int(event_counts.get('campaign_state_change', 0)), 'tone': 'info'},
+        {'key': 'success', 'label': 'Entregas confirmadas', 'count': int(event_counts.get('send_success', 0)), 'tone': 'success'},
+        {'key': 'retry', 'label': 'Novas tentativas', 'count': int(event_counts.get('retry_scheduled', 0)), 'tone': 'warn'},
+        {'key': 'failure', 'label': 'Falhas tecnicas', 'count': int(event_counts.get('send_failure', 0)), 'tone': 'error'},
+    ]
+
+    milestone_logs = db.scalars(
+        select(SendLog)
+        .where(SendLog.campaign_id == campaign_id, SendLog.event_type == 'campaign_state_change')
+        .order_by(SendLog.created_at.desc())
+        .limit(20)
+    ).all()
+    milestones = []
+    seen_titles = set()
+    for log in milestone_logs:
+        milestone = _campaign_milestone_from_state(log.payload_excerpt)
+        if milestone is None or milestone['title'] in seen_titles:
+            continue
+        seen_titles.add(milestone['title'])
+        milestones.append(
+            {
+                'title': milestone['title'],
+                'summary': milestone['summary'],
+                'time': log.created_at.isoformat(),
+                'tone': milestone['tone'],
+            }
+        )
+
+    incident_rows = db.execute(
+        select(
+            SendLog.event_type,
+            SendLog.payload_excerpt,
+            SendLog.error_class,
+            SendLog.http_status,
+            func.count(SendLog.id),
+            func.max(SendLog.created_at),
+        )
+        .where(SendLog.campaign_id == campaign_id, SendLog.event_type.in_(['send_failure', 'retry_scheduled']))
+        .group_by(SendLog.event_type, SendLog.payload_excerpt, SendLog.error_class, SendLog.http_status)
+        .order_by(func.count(SendLog.id).desc(), func.max(SendLog.created_at).desc())
+        .limit(8)
+    ).all()
+    incidents = [
+        {
+            'title': _friendly_event_title(event_type),
+            'summary': _friendly_failure_reason(payload_excerpt),
+            'tone': _activity_tone(event_type),
+            'count': int(count or 0),
+            'time': latest_at.isoformat(),
+            'error_class': error_class or '-',
+            'http_status': http_status or '-',
+        }
+        for event_type, payload_excerpt, error_class, http_status, count, latest_at in incident_rows
+    ]
+
+    processed_count = int(event_counts.get('send_success', 0) + event_counts.get('send_failure', 0))
+    batch_size = 1000 if processed_count >= 1000 else 500 if processed_count >= 500 else 0
+    if batch_size:
+        processed_marker = (processed_count // batch_size) * batch_size
+        processed_at = db.scalar(
+            select(func.max(SendLog.created_at)).where(
+                SendLog.campaign_id == campaign_id,
+                SendLog.event_type.in_(['send_success', 'send_failure']),
+            )
+        )
+        if processed_at is not None and processed_marker > 0:
+            milestones.append(
+                {
+                    'title': 'Lote processado',
+                    'summary': f'Lote de {processed_marker:,} contatos processado.'.replace(',', '.'),
+                    'time': processed_at.isoformat(),
+                    'tone': 'success',
+                }
+            )
+
+    failed_count = int(event_counts.get('send_failure', 0))
+    if failed_count >= 10:
+        failure_peak_at = db.scalar(
+            select(func.max(SendLog.created_at)).where(
+                SendLog.campaign_id == campaign_id,
+                SendLog.event_type == 'send_failure',
+            )
+        )
+        if failure_peak_at is not None:
+            milestones.append(
+                {
+                    'title': 'Pico de falhas',
+                    'summary': f'{failed_count} falhas acumuladas pedem revisao operacional.',
+                    'time': failure_peak_at.isoformat(),
+                    'tone': 'error',
+                }
+            )
+
+    milestones = sorted(milestones, key=lambda item: item['time'], reverse=True)[:6]
+
+    return {
+        'total_events': total_events,
+        'summary_cards': summary_cards,
+        'milestones': milestones,
+        'incidents': incidents,
+    }
 
 
 def stats_payload(db: Session, campaign_id: int) -> dict:

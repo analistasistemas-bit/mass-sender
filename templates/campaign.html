@@ -51,12 +51,12 @@
       data-test-required="{{ campaign.is_test_required }}"
       data-test-completed-at="{{ stats.test_completed_at or '' }}"
       data-contacts-page="{{ contacts_page }}"
+      data-contacts-per-page="{{ contacts_page_size }}"
       data-contacts-filter="{{ contacts_status_filter }}"
-      data-initial-logs="{{ logs|length }}"
     >
       <a href="/" class="inline-flex items-center gap-2 text-sm font-semibold text-brand">← Voltar para operacao</a>
 
-      <section class="sticky top-4 z-20 rounded-[32px] border border-white/70 bg-white/95 p-6 shadow-panel backdrop-blur">
+      <section class="rounded-[32px] border border-white/70 bg-white/95 p-6 shadow-panel backdrop-blur">
         <div class="flex flex-col gap-6">
           <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div class="space-y-3">
@@ -181,6 +181,68 @@
       </section>
 
       <section class="grid gap-6 xl:grid-cols-[0.85fr_1.15fr]">
+        <article
+          id="results-section"
+          data-testid="results-section"
+          tabindex="-1"
+          class="min-w-0 rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-panel xl:col-span-2"
+        >
+          <div class="flex flex-col gap-6">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p class="text-sm font-semibold uppercase tracking-[0.25em] text-brand">Resultados da campanha</p>
+                <h2 id="results-headline" class="mt-2 font-display text-2xl text-ink">Carregando leitura final</h2>
+                <p id="results-summary" class="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
+                  O sistema esta consolidando os indicadores mais relevantes para a operacao.
+                </p>
+              </div>
+              <div class="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Leitura rapida</p>
+                <p id="results-insight-pill" class="mt-2 text-sm font-semibold text-ink">Sem dados suficientes ainda</p>
+              </div>
+            </div>
+
+            <div class="results-grid">
+              <div class="result-card">
+                <p class="metric-label">Taxa de entrega</p>
+                <p id="results-success-rate" class="mt-2 text-3xl font-semibold text-ink">0%</p>
+              </div>
+              <div class="result-card">
+                <p class="metric-label">Cobertura processada</p>
+                <p id="results-coverage-rate" class="mt-2 text-3xl font-semibold text-ink">0%</p>
+              </div>
+              <div class="result-card">
+                <p class="metric-label">Duracao</p>
+                <p id="results-duration" class="mt-2 text-3xl font-semibold text-ink">--</p>
+              </div>
+              <div class="result-card">
+                <p class="metric-label">Janela</p>
+                <p id="results-window" class="mt-2 text-base font-semibold text-ink">Aguardando execucao</p>
+              </div>
+            </div>
+
+            <div class="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
+              <div class="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Distribuicao final</p>
+                    <p class="mt-2 text-sm leading-6 text-slate-600">Resumo operacional sem repetir a tabela de contatos.</p>
+                  </div>
+                </div>
+                <div id="results-distribution" class="mt-5 flex flex-wrap gap-3"></div>
+              </div>
+              <div class="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <p class="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Falhas que pedem acao</p>
+                <div id="results-failures" class="mt-4 space-y-3">
+                  <div class="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-500">
+                    Nenhuma falha relevante identificada ate agora.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
         <article class="min-w-0 rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-panel">
           <div class="flex flex-col gap-6">
             <div>
@@ -332,6 +394,16 @@
                     </button>
                   </div>
                 </div>
+                <label for="contacts-per-page" class="whitespace-nowrap text-sm font-semibold text-slate-700">Por pagina</label>
+                <select
+                  id="contacts-per-page"
+                  name="per_page"
+                  class="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-brand focus:ring-4 focus:ring-brand/10"
+                >
+                  {% for option in [10, 25, 50] %}
+                  <option value="{{ option }}" {% if contacts_page_size == option %}selected{% endif %}>{{ option }}</option>
+                  {% endfor %}
+                </select>
                 <button type="submit" class="secondary-button whitespace-nowrap">Aplicar filtro</button>
               </form>
             </div>
@@ -404,21 +476,26 @@
               </table>
             </div>
 
-            <div class="flex flex-wrap gap-3">
-              {% if contacts_page > 1 %}
-              <a
+            <div id="contacts-pagination" class="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                id="contacts-prev-page"
                 class="secondary-button"
-                href="/campaigns/{{ campaign.id }}?page={{ contacts_page - 1 }}{% if contacts_status_filter %}&status={{ contacts_status_filter }}{% endif %}"
-                >Pagina anterior</a
+                {% if contacts_page <= 1 %}disabled{% endif %}
               >
-              {% endif %}
-              {% if contacts_page < contacts_total_pages %}
-              <a
+                Pagina anterior
+              </button>
+              <span id="contacts-page-indicator" class="rounded-full border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+                Pagina {{ contacts_page }} de {{ contacts_total_pages }}
+              </span>
+              <button
+                type="button"
+                id="contacts-next-page"
                 class="secondary-button"
-                href="/campaigns/{{ campaign.id }}?page={{ contacts_page + 1 }}{% if contacts_status_filter %}&status={{ contacts_status_filter }}{% endif %}"
-                >Proxima pagina</a
+                {% if contacts_page >= contacts_total_pages %}disabled{% endif %}
               >
-              {% endif %}
+                Proxima pagina
+              </button>
             </div>
           </div>
         </article>
@@ -427,48 +504,43 @@
       <section class="rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-panel">
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <p class="text-sm font-semibold uppercase tracking-[0.25em] text-brand">Logs inteligentes</p>
-            <h2 class="mt-2 font-display text-2xl text-ink">Historico recente</h2>
+            <p class="text-sm font-semibold uppercase tracking-[0.25em] text-brand">Atividade operacional</p>
+            <h2 class="mt-2 font-display text-2xl text-ink">Resumo, marcos e incidentes</h2>
+            <p class="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+              A tela prioriza sinal operacional. O detalhe tecnico so aparece quando realmente ajuda a diagnosticar falhas.
+            </p>
           </div>
-          <button type="button" id="logs-toggle" class="secondary-button">Mostrar logs</button>
+          <button type="button" id="logs-toggle" class="secondary-button">Mostrar atividade tecnica</button>
         </div>
 
-        <div id="logs-panel" data-testid="logs-panel" class="mt-6 hidden space-y-4">
-          <p class="sr-only">Historico recente</p>
-          {% if logs %}
-          {% for log in logs %}
-          {% set tone = 'info' %}
-          {% if log.event_type == 'send_failure' %}
-          {% set tone = 'error' %}
-          {% elif log.event_type == 'retry_scheduled' %}
-          {% set tone = 'warn' %}
-          {% elif 'success' in log.event_type %}
-          {% set tone = 'success' %}
-          {% endif %}
-          <article class="log-card log-card--{{ tone }}">
-            <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="mt-6 space-y-6">
+          <div>
+            <div class="flex items-center justify-between gap-3">
               <div>
-                <p class="text-sm font-semibold text-ink">{{ log.event_type.replace('_', ' ').title() }}</p>
-                <p class="mt-1 text-sm leading-6 text-slate-600">{{ log.payload_excerpt or 'Sem detalhes adicionais.' }}</p>
+                <p class="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Resumo operacional</p>
+                <p class="mt-2 text-sm leading-6 text-slate-600">Volume consolidado de eventos para evitar listas gigantes durante campanhas grandes.</p>
               </div>
-              <p class="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">{{ log.created_at }}</p>
+              <span id="activity-total-events" class="rounded-full bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">0 eventos</span>
             </div>
-            <details class="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3">
-              <summary class="cursor-pointer text-sm font-semibold text-slate-700">Ver detalhes tecnicos</summary>
-              <div class="mt-3 grid gap-2 text-sm text-slate-500">
-                <p>Contato: {{ log.contact_id or '-' }}</p>
-                <p>Status HTTP: {{ log.http_status or '-' }}</p>
-                <p>Classe de erro: {{ log.error_class or '-' }}</p>
-              </div>
-            </details>
-          </article>
-          {% endfor %}
-          {% else %}
-          <div class="rounded-[24px] border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
-            <p class="text-sm font-semibold text-ink">Sem logs recentes.</p>
-            <p class="mt-2 text-sm leading-6 text-slate-500">Os eventos da campanha vao aparecer aqui quando houver atividade.</p>
+            <div id="activity-summary-grid" class="mt-5 activity-summary-grid"></div>
           </div>
-          {% endif %}
+
+          <div class="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+            <div class="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <p class="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Marcos recentes</p>
+              <div id="activity-milestones" class="mt-4 space-y-3"></div>
+            </div>
+            <div id="logs-panel" data-testid="logs-panel" class="hidden rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Incidentes agrupados</p>
+                  <p class="mt-2 text-sm leading-6 text-slate-600">Cada card consolida eventos repetidos do mesmo tipo para nao inflar a tela.</p>
+                </div>
+                <span class="rounded-full bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Detalhe tecnico</span>
+              </div>
+              <div id="activity-incidents" class="mt-4 space-y-3"></div>
+            </div>
+          </div>
         </div>
       </section>
     </main>

@@ -28,7 +28,42 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
     finished_at: null,
     updated_at: '2026-03-18T12:00:00+00:00',
   };
+  let overviewState = {
+    results: {
+      headline: 'Resultados parciais',
+      summary: 'Os principais indicadores aparecem aqui quando houver execucao suficiente.',
+      processed: 0,
+      success_rate: 0,
+      failure_rate: 0,
+      coverage_rate: 0,
+      duration_seconds: 0,
+      distribution: {
+        sent: 0,
+        failed: 0,
+        pending: 0,
+        invalid: 0,
+        valid: 0,
+        total: 0,
+      },
+      top_failures: [],
+      started_at: null,
+      finished_at: null,
+    },
+    activity: {
+      total_events: 0,
+      summary_cards: [
+        { key: 'state', label: 'Mudancas de estado', count: 0, tone: 'info' },
+        { key: 'success', label: 'Entregas confirmadas', count: 0, tone: 'success' },
+        { key: 'retry', label: 'Novas tentativas', count: 0, tone: 'warn' },
+        { key: 'failure', label: 'Falhas tecnicas', count: 0, tone: 'error' },
+      ],
+      milestones: [],
+      incidents: [],
+    },
+  };
   let deleteContactCalled = false;
+  let currentContactsPage = 1;
+  let currentPerPage = 25;
 
   await page.route('**/bridge/session', async (route) => {
     await route.fulfill({
@@ -83,6 +118,14 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
     });
   });
 
+  await page.route('**/campaigns/*/overview', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(overviewState),
+    });
+  });
+
   await page.route('**/campaigns/*/contacts/upload', async (route) => {
     statsState = {
       ...statsState,
@@ -92,6 +135,16 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
       invalid: 0,
       total: 1,
       updated_at: '2026-03-18T12:01:00+00:00',
+    };
+    overviewState = {
+      ...overviewState,
+      results: {
+        ...overviewState.results,
+        headline: 'Resultados parciais',
+        summary: 'Base pronta para a proxima etapa operacional.',
+        coverage_rate: 0,
+        distribution: { sent: 0, failed: 0, pending: 1, invalid: 0, valid: 1, total: 1 },
+      },
     };
     await route.fulfill({
       status: 200,
@@ -147,27 +200,32 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
     });
   });
 
-  await page.route('**/campaigns/*/contacts?page=1', async (route) => {
+  await page.route(/\/campaigns\/\d+\/contacts(\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    currentContactsPage = Number(url.searchParams.get('page') || '1');
+    currentPerPage = Number(url.searchParams.get('per_page') || '25');
+    const allItems = Array.from({ length: 26 }, (_, index) => ({
+      id: index + 1,
+      name: `Cliente ${index + 1}`,
+      phone_raw: `819999999${String(index + 1).padStart(2, '0')}`,
+      phone_e164: `+55819999999${String(index + 1).padStart(2, '0')}`,
+      email: `cliente${index + 1}@example.com`,
+      status: 'pending',
+      error_message: '',
+    }));
+    const offset = (currentContactsPage - 1) * currentPerPage;
+    const items = allItems.slice(offset, offset + currentPerPage);
+    const totalPages = Math.max(1, Math.ceil(allItems.length / currentPerPage));
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        items: [
-          {
-            id: 1,
-            name: 'Cliente E2E',
-            phone_raw: '81999999999',
-            phone_e164: '+5581999999999',
-            email: 'cliente@example.com',
-            status: statsState.pending > 0 ? 'pending' : statsState.sent > 0 ? 'sent' : 'failed',
-            error_message: '',
-          },
-        ],
+        items,
         pagination: {
-          page: 1,
-          total_pages: 1,
-          total: 1,
-          page_size: 100,
+          page: currentContactsPage,
+          total_pages: totalPages,
+          total: allItems.length,
+          page_size: currentPerPage,
         },
         status_filter: '',
       }),
@@ -215,6 +273,23 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
       test_completed_at: '2026-03-18T12:03:00+00:00',
       updated_at: '2026-03-18T12:03:00+00:00',
     };
+    overviewState = {
+      ...overviewState,
+      activity: {
+        ...overviewState.activity,
+        total_events: 1,
+        summary_cards: [
+          { key: 'state', label: 'Mudancas de estado', count: 1, tone: 'info' },
+          { key: 'success', label: 'Entregas confirmadas', count: 0, tone: 'success' },
+          { key: 'retry', label: 'Novas tentativas', count: 0, tone: 'warn' },
+          { key: 'failure', label: 'Falhas tecnicas', count: 0, tone: 'error' },
+        ],
+        milestones: [
+          { title: 'Campanha iniciada', summary: 'O envio real foi liberado e a campanha entrou em execucao.', time: '2026-03-18T12:03:00+00:00', tone: 'info' },
+        ],
+        incidents: [],
+      },
+    };
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -237,6 +312,32 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
       status: 'running',
       started_at: '2026-03-18T12:04:00+00:00',
       updated_at: '2026-03-18T12:04:00+00:00',
+    };
+    overviewState = {
+      ...overviewState,
+      results: {
+        ...overviewState.results,
+        headline: 'Campanha em andamento',
+        summary: 'A execucao segue ativa.',
+        processed: 0,
+        distribution: { sent: 0, failed: 0, pending: 1, invalid: 0, valid: 1, total: 1 },
+        started_at: '2026-03-18T12:04:00+00:00',
+        finished_at: null,
+      },
+      activity: {
+        ...overviewState.activity,
+        total_events: 2,
+        summary_cards: [
+          { key: 'state', label: 'Mudancas de estado', count: 2, tone: 'info' },
+          { key: 'success', label: 'Entregas confirmadas', count: 0, tone: 'success' },
+          { key: 'retry', label: 'Novas tentativas', count: 0, tone: 'warn' },
+          { key: 'failure', label: 'Falhas tecnicas', count: 0, tone: 'error' },
+        ],
+        milestones: [
+          { title: 'Campanha iniciada', summary: 'O envio real foi liberado e a campanha entrou em execucao.', time: '2026-03-18T12:04:00+00:00', tone: 'info' },
+        ],
+        incidents: [],
+      },
     };
     await route.fulfill({
       status: 200,
@@ -265,6 +366,45 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
       sent: 1,
       pending: 0,
       updated_at: '2026-03-18T12:06:00+00:00',
+    };
+    overviewState = {
+      results: {
+        headline: 'Campanha concluida',
+        summary: 'Resultado final sem incidentes relevantes.',
+        processed: 1,
+        success_rate: 100,
+        failure_rate: 0,
+        coverage_rate: 100,
+        duration_seconds: 120,
+        distribution: {
+          sent: 1,
+          failed: 0,
+          pending: 0,
+          invalid: 0,
+          valid: 1,
+          total: 1,
+        },
+        top_failures: [],
+        started_at: '2026-03-18T12:04:00+00:00',
+        finished_at: '2026-03-18T12:06:00+00:00',
+      },
+      activity: {
+        total_events: 4,
+        summary_cards: [
+          { key: 'state', label: 'Mudancas de estado', count: 3, tone: 'info' },
+          { key: 'success', label: 'Entregas confirmadas', count: 1, tone: 'success' },
+          { key: 'retry', label: 'Novas tentativas', count: 0, tone: 'warn' },
+          { key: 'failure', label: 'Falhas tecnicas', count: 0, tone: 'error' },
+        ],
+        milestones: [
+          { title: 'Campanha concluida', summary: 'A campanha terminou e encerrou a fila atual.', time: '2026-03-18T12:06:00+00:00', tone: 'success' },
+          { title: 'Campanha iniciada', summary: 'O envio real foi liberado e a campanha entrou em execucao.', time: '2026-03-18T12:04:00+00:00', tone: 'info' },
+          { title: 'Lote processado', summary: 'Lote de 1 contatos processado.', time: '2026-03-18T12:05:50+00:00', tone: 'success' },
+        ],
+        incidents: [
+          { title: 'Falha de envio', summary: 'Sistema de envio indisponivel', tone: 'error', count: 4, time: '2026-03-18T12:05:40+00:00', error_class: 'temporary', http_status: 503 },
+        ],
+      },
     };
     await route.fulfill({
       status: 200,
@@ -307,9 +447,18 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Simular campanha' })).toBeVisible();
   await expect(page.locator('[data-testid="primary-action"]')).toContainText('Simular campanha');
   await expect(page.locator('[data-testid="status-filter-trigger"]')).toHaveText(/Todos/);
+  await expect(page.locator('#contacts-meta')).toContainText('Pagina 1 de 2');
   await page.locator('[data-testid="status-filter-trigger"]').click();
   await page.getByRole('option', { name: 'Falhas' }).click();
   await expect(page.locator('[data-testid="status-filter-trigger"]')).toHaveText(/Falhas/);
+  await expect(page.locator('#contacts-per-page')).toHaveValue('25');
+  await expect(page.locator('#contacts-body tr')).toHaveCount(25);
+  await expect(page.locator('#contacts-meta')).toContainText('Total exibido: 25 de 26 registros. Pagina 1 de 2.');
+  await page.getByRole('button', { name: 'Proxima pagina' }).click();
+  await expect(page.locator('#contacts-meta')).toContainText('Total exibido: 1 de 26 registros. Pagina 2 de 2.');
+  await expect(page.locator('#contacts-body')).toContainText('Cliente 26');
+  await page.getByRole('button', { name: 'Pagina anterior' }).click();
+  await expect(page.locator('#contacts-meta')).toContainText('Total exibido: 25 de 26 registros. Pagina 1 de 2.');
 
   await page.getByRole('button', { name: 'Adicionar cliente manualmente' }).click();
   await page.locator('#manual-contact-form input[name="name"]').fill('Cliente Manual');
@@ -373,6 +522,11 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
   await expect(page.locator('.stepper-item[data-step-key="3"]')).toHaveAttribute('data-step-state', 'done');
   await expect(page.locator('.stepper-item[data-step-key="4"]')).toHaveAttribute('data-step-state', 'done');
   await expect(page.locator('.stepper-item[data-step-key="5"]')).toHaveAttribute('data-step-state', 'done');
+  await page.getByRole('button', { name: 'Ver resultados' }).click();
+  await expect(page.locator('[data-testid="results-section"]')).toBeFocused();
+  await expect(page.locator('#results-headline')).toContainText('Campanha concluida');
+  await expect(page.locator('#results-success-rate')).toContainText('100%');
+  await expect(page.locator('#results-distribution')).toContainText('Enviados');
 
   statsState = {
     ...statsState,
@@ -395,8 +549,13 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
   await expect(page.locator('[data-testid="primary-action"]')).toContainText('Reiniciar campanha');
   await expect(page.getByRole('button', { name: 'Reiniciar campanha' })).toHaveCount(1);
 
-  await page.getByRole('button', { name: 'Mostrar logs' }).click();
-  await expect(page.locator('[data-testid="logs-panel"]')).toContainText('Historico recente');
+  await page.getByRole('button', { name: 'Mostrar atividade tecnica' }).click();
+  await expect(page.locator('[data-testid="logs-panel"]')).toContainText('Incidentes agrupados');
+  await expect(page.locator('#activity-summary-grid')).toContainText('Entregas confirmadas');
+  await expect(page.locator('#activity-incidents')).toContainText('Sistema de envio indisponivel');
+  await expect(page.locator('#activity-milestones')).toContainText('Campanha concluida');
+  await expect(page.locator('#activity-milestones')).toContainText('Campanha iniciada');
+  await expect(page.locator('#activity-milestones')).toContainText('Lote processado');
 
   await page.setViewportSize({ width: 960, height: 700 });
   await expect(page.locator('[data-testid="contacts-table-wrap"]')).toBeVisible();

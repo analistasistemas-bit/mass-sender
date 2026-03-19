@@ -237,6 +237,78 @@ code {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
+.results-grid,
+.activity-summary-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.result-card,
+.activity-summary-card {
+  border: 1px solid #d7e1e8;
+  border-radius: 1.4rem;
+  background: #f8fafc;
+  padding: 1rem;
+}
+
+.activity-summary-card--success {
+  border-color: rgba(31, 143, 95, 0.18);
+  background: rgba(31, 143, 95, 0.06);
+}
+
+.activity-summary-card--warn {
+  border-color: rgba(183, 121, 31, 0.18);
+  background: rgba(183, 121, 31, 0.06);
+}
+
+.activity-summary-card--error {
+  border-color: rgba(192, 86, 86, 0.2);
+  background: rgba(192, 86, 86, 0.06);
+}
+
+.activity-summary-card--info {
+  border-color: rgba(15, 108, 189, 0.16);
+  background: rgba(15, 108, 189, 0.05);
+}
+
+.distribution-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 999px;
+  border: 1px solid #d7e1e8;
+  background: #fff;
+  padding: 0.7rem 0.95rem;
+  font-size: 0.9rem;
+  color: #334155;
+}
+
+.distribution-pill strong {
+  font-size: 1rem;
+  color: #102033;
+}
+
+.distribution-pill--success {
+  border-color: rgba(31, 143, 95, 0.2);
+  background: rgba(31, 143, 95, 0.08);
+}
+
+.distribution-pill--warn {
+  border-color: rgba(183, 121, 31, 0.2);
+  background: rgba(183, 121, 31, 0.08);
+}
+
+.distribution-pill--error {
+  border-color: rgba(192, 86, 86, 0.22);
+  background: rgba(192, 86, 86, 0.08);
+}
+
+.distribution-pill--muted {
+  border-color: #d7e1e8;
+  background: rgba(100, 116, 139, 0.07);
+}
+
 .filter-select-shell {
   position: relative;
   min-width: 220px;
@@ -380,6 +452,47 @@ code {
   border: 1px solid #d7e1e8;
   background: #f8fafc;
   padding: 1.2rem;
+}
+
+.activity-item,
+.incident-card {
+  border-radius: 1.25rem;
+  border: 1px solid #d7e1e8;
+  background: #fff;
+  padding: 1rem;
+}
+
+.activity-item__time {
+  flex: none;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.activity-item--success,
+.incident-card--success {
+  border-color: rgba(31, 143, 95, 0.2);
+  background: rgba(31, 143, 95, 0.06);
+}
+
+.activity-item--warn,
+.incident-card--warn {
+  border-color: rgba(183, 121, 31, 0.2);
+  background: rgba(183, 121, 31, 0.06);
+}
+
+.activity-item--error,
+.incident-card--error {
+  border-color: rgba(192, 86, 86, 0.2);
+  background: rgba(192, 86, 86, 0.06);
+}
+
+.activity-item--info,
+.incident-card--info {
+  border-color: rgba(15, 108, 189, 0.18);
+  background: rgba(15, 108, 189, 0.05);
 }
 
 .log-card--info {

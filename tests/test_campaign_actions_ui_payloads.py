@@ -5,7 +5,17 @@ from sqlalchemy.orm import sessionmaker
 
 from database import Base
 from models import Campaign, Contact
-from services.campaign_service import add_manual_contact, delete_contact_from_campaign, dry_run, restart_campaign, start_campaign, stats_payload
+from services.campaign_service import (
+    add_manual_contact,
+    build_activity_payload,
+    build_results_payload,
+    delete_contact_from_campaign,
+    dry_run,
+    log_event,
+    restart_campaign,
+    start_campaign,
+    stats_payload,
+)
 
 
 def build_session():
@@ -433,3 +443,71 @@ def test_delete_contact_from_campaign_blocks_when_campaign_running():
     assert result['ok'] is False
     assert 'nao pode remover' in result['message'].lower()
     assert session.get(Contact, contact.id) is not None
+
+
+def test_build_results_payload_returns_aggregated_operational_summary():
+    session = build_session()
+    started_at = datetime.now(timezone.utc)
+    finished_at = datetime.now(timezone.utc)
+    campaign = Campaign(
+        name='Resultados',
+        message_template='Oi {{nome}}',
+        status='completed',
+        started_at=started_at,
+        finished_at=finished_at,
+    )
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    session.add_all(
+        [
+            Contact(campaign_id=campaign.id, name='Sent 1', phone_raw='1', phone_e164='+551', email='a@a', status='sent', sent_at=started_at),
+            Contact(campaign_id=campaign.id, name='Sent 2', phone_raw='2', phone_e164='+552', email='b@b', status='sent', sent_at=started_at),
+            Contact(campaign_id=campaign.id, name='Fail', phone_raw='3', phone_e164='+553', email='c@c', status='failed', error_message='bridge_unreachable'),
+            Contact(campaign_id=campaign.id, name='Invalid', phone_raw='4', phone_e164=None, email='d@d', status='invalid', error_message='number_resolution_failed'),
+        ]
+    )
+    session.commit()
+
+    payload = build_results_payload(session, campaign.id)
+
+    assert payload['headline'] == 'Campanha concluida'
+    assert payload['processed'] == 3
+    assert payload['distribution']['sent'] == 2
+    assert payload['distribution']['failed'] == 1
+    assert payload['distribution']['invalid'] == 1
+    assert payload['success_rate'] > 60
+    assert payload['coverage_rate'] > 0
+    assert payload['top_failures']
+
+
+def test_build_activity_payload_groups_high_volume_logs():
+    session = build_session()
+    campaign = Campaign(name='Atividade', message_template='Oi {{nome}}', status='completed')
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    log_event(session, campaign.id, None, 'campaign_state_change', 'campaign running')
+    log_event(session, campaign.id, None, 'campaign_state_change', 'campaign paused')
+    log_event(session, campaign.id, None, 'campaign_state_change', 'campaign resumed')
+    log_event(session, campaign.id, None, 'campaign_state_change', 'campaign completed')
+    for _ in range(3):
+        log_event(session, campaign.id, None, 'retry_scheduled', 'temporary')
+    for _ in range(12):
+        log_event(session, campaign.id, None, 'send_failure', 'bridge_unreachable', 503, 'temporary')
+    for _ in range(1000):
+        log_event(session, campaign.id, None, 'send_success', 'delivered')
+    session.commit()
+
+    payload = build_activity_payload(session, campaign.id)
+
+    assert payload['total_events'] == 1019
+    assert any(card['label'] == 'Entregas confirmadas' and card['count'] == 1000 for card in payload['summary_cards'])
+    assert any(item['summary'] == 'Sistema de envio indisponivel' and item['count'] == 12 for item in payload['incidents'])
+    assert len(payload['milestones']) <= 6
+    assert any(item['title'] == 'Campanha concluida' for item in payload['milestones'])
+    assert any(item['title'] == 'Campanha iniciada' for item in payload['milestones'])
+    assert any(item['title'] == 'Lote processado' and '1.000' in item['summary'] for item in payload['milestones'])
+    assert any(item['title'] == 'Pico de falhas' for item in payload['milestones'])

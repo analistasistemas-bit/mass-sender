@@ -13,6 +13,7 @@ Este documento explica, passo a passo, como usar o aplicativo para:
 - acompanhar o progresso
 - pausar, retomar, cancelar e reiniciar campanhas
 - revisar resultados e exportar falhas
+- consultar atividade operacional resumida
 
 Este guia foi escrito para operadores do sistema, não para manutenção técnica.
 
@@ -56,7 +57,8 @@ Use para:
 - mandar teste
 - iniciar o envio real
 - acompanhar o progresso
-- abrir logs
+- abrir a leitura de resultados
+- consultar a atividade operacional
 - exportar falhas
 
 ## Passo a Passo Completo
@@ -180,6 +182,13 @@ Depois do upload, a tela atualiza:
 - contagem de pendentes
 - tabela de contatos
 - stepper
+
+Na tabela de contatos:
+
+- a paginação padrão mostra `25` contatos por vez
+- você pode trocar para `10`, `25` ou `50` por página
+- use `Pagina anterior` e `Proxima pagina` para navegar
+- o filtro de status continua valendo junto com a paginação
 
 Se o upload der certo, você verá um toast como:
 
@@ -314,7 +323,7 @@ Se uma campanha já teve envio real e você adicionar novos contatos depois:
 - os novos contatos entram na fila pendente
 - se a campanha já teve envio real antes, o sistema libera novo início sem exigir um novo teste apenas por causa dessa reabertura
 
-## 11. Pausar a Campanha
+## 12. Pausar a Campanha
 
 Se precisar interromper a operação:
 
@@ -326,7 +335,7 @@ Resultado esperado:
 - a narrativa informa que nenhum envio acontecerá até retomada
 - a ação principal muda para `Retomar campanha`
 
-## 12. Retomar a Campanha
+## 13. Retomar a Campanha
 
 Para continuar:
 
@@ -336,7 +345,7 @@ Resultado esperado:
 
 - a campanha volta ao fluxo de envio
 
-## 13. Cancelar a Campanha
+## 14. Cancelar a Campanha
 
 Se precisar encerrar a operação atual:
 
@@ -350,7 +359,7 @@ Resultado esperado:
 - o sistema interrompe a operação atual
 - a ação principal muda para `Reiniciar campanha`
 
-## 14. Reiniciar a Campanha
+## 15. Reiniciar a Campanha
 
 Use esta opção quando quiser montar uma nova tentativa após falhas ou cancelamento.
 
@@ -363,31 +372,62 @@ Resultado esperado:
 - a campanha volta para `Pronta`
 - o fluxo volta para teste e nova execução
 
-## 15. Ler os Logs
+## 16. Ler a Atividade Operacional
 
-Na área `Logs inteligentes`:
+Na área `Atividade operacional`:
 
-1. Clique em `Mostrar logs`
+1. Clique em `Mostrar atividade tecnica`
 
 Você verá:
 
-- cartões resumidos por evento
-- linguagem mais amigável
+- cards de resumo com contagem consolidada
+- marcos recentes do sistema e da campanha
+- incidentes agrupados por tipo
 - botão `Ver detalhes técnicos` quando necessário
 
-Use logs para:
+Use essa área para:
 
 - entender falhas
 - revisar mudanças de estado
 - apoiar diagnóstico operacional
+- evitar abrir centenas de cards repetidos em campanhas grandes
 
-## 16. Exportar Falhas
+Os `Marcos recentes` mostram apenas sinais de controle da campanha, como:
+
+- campanha iniciada
+- campanha pausada
+- campanha retomada
+- campanha concluída
+- pico de falhas
+- lote processado em patamares relevantes
+
+## 17. Exportar Falhas
 
 Quando houver falhas e a campanha chegar a um estado apropriado:
 
 1. Clique em `Exportar falhas`
 
 O sistema baixa um CSV com os contatos problemáticos para análise ou nova tratativa.
+
+## 18. Ver Resultados
+
+Quando a campanha estiver concluída, a ação principal passa a ser `Ver resultados`.
+
+Use essa seção para revisar:
+
+- taxa de entrega
+- cobertura processada
+- duração da execução
+- janela de início e fim
+- distribuição final de enviados, falhas, pendentes e inválidos
+- principais tipos de falha que merecem revisão
+
+Importante:
+
+- essa seção fica na própria página da campanha
+- ela foi criada para reunir o que importa no fechamento da operação
+- ela não repete a tabela de contatos nem os eventos técnicos brutos
+- ela funciona melhor como leitura final, não como histórico detalhado
 
 ## Como Interpretar os Status da Campanha
 
@@ -446,7 +486,7 @@ Se necessário:
 Faça nesta ordem:
 
 1. Leia o toast e a narrativa
-2. Abra os logs
+2. Abra a atividade operacional
 3. Verifique se o WhatsApp continua conectado
 4. Tente novamente
 
@@ -463,7 +503,7 @@ Verifique:
 Faça nesta ordem:
 
 1. Clique em `Ver resultados`
-2. Abra `Logs inteligentes`
+2. Abra `Atividade operacional`
 3. Clique em `Exportar falhas`
 4. Se necessário, use `Reiniciar campanha`
 
@@ -490,4 +530,5 @@ Fluxo recomendado:
 8. Iniciar campanha
 9. Acompanhar progresso
 10. Ver resultados
-11. Exportar falhas se necessário
+11. Consultar atividade operacional se precisar de diagnostico
+12. Exportar falhas se necessário

@@ -3,7 +3,8 @@
   if (!root) return;
 
   const campaignId = root.dataset.campaignId;
-  const contactsPage = Number(root.dataset.contactsPage || '1');
+  let contactsPage = Number(root.dataset.contactsPage || '1');
+  let contactsPerPage = Number(root.dataset.contactsPerPage || '25');
   const contactsFilter = (root.dataset.contactsFilter || '').trim();
   const isTestRequired = Number(root.dataset.testRequired || '1') !== 0;
 
@@ -34,12 +35,30 @@
   const contactsReadyCopy = document.getElementById('contacts-ready-copy');
   const contactsMeta = document.getElementById('contacts-meta');
   const contactsBody = document.getElementById('contacts-body');
+  const contactsPerPageSelect = document.getElementById('contacts-per-page');
+  const contactsPrevPage = document.getElementById('contacts-prev-page');
+  const contactsNextPage = document.getElementById('contacts-next-page');
+  const contactsPageIndicator = document.getElementById('contacts-page-indicator');
   const statusFilterInput = document.getElementById('status-filter-input');
   const statusFilterTrigger = document.getElementById('status-filter-trigger');
   const statusFilterLabel = document.getElementById('status-filter-label');
   const statusFilterMenu = document.getElementById('status-filter-menu');
   const statusFilterOptions = Array.from(document.querySelectorAll('.filter-option'));
   const uploadSummary = document.getElementById('upload-summary');
+  const resultsSection = document.getElementById('results-section');
+  const resultsHeadline = document.getElementById('results-headline');
+  const resultsSummary = document.getElementById('results-summary');
+  const resultsInsightPill = document.getElementById('results-insight-pill');
+  const resultsSuccessRate = document.getElementById('results-success-rate');
+  const resultsCoverageRate = document.getElementById('results-coverage-rate');
+  const resultsDuration = document.getElementById('results-duration');
+  const resultsWindow = document.getElementById('results-window');
+  const resultsDistribution = document.getElementById('results-distribution');
+  const resultsFailures = document.getElementById('results-failures');
+  const activityTotalEvents = document.getElementById('activity-total-events');
+  const activitySummaryGrid = document.getElementById('activity-summary-grid');
+  const activityMilestones = document.getElementById('activity-milestones');
+  const activityIncidents = document.getElementById('activity-incidents');
   const templateForm = document.getElementById('template-form');
   const uploadForm = document.getElementById('upload-form');
   const manualContactToggle = document.getElementById('manual-contact-toggle');
@@ -83,6 +102,12 @@
   };
   let currentPrimaryAction = null;
   let activeLoads = new Map();
+  let overview = {
+    results: null,
+    activity: null,
+  };
+  let overviewFailureReason = null;
+  let overviewFailureWarned = false;
 
   const actionLabels = {
     dryRun: 'Simular campanha',
@@ -94,7 +119,7 @@
     restart: 'Reiniciar campanha',
     refresh: 'Atualizar agora',
     viewResults: 'Ver resultados',
-    showLogs: 'Mostrar logs',
+    showLogs: 'Ver atividade',
     exportFailures: 'Exportar falhas',
   };
 
@@ -226,6 +251,29 @@
     return remainder ? `${minutes}min ${remainder}s` : `${minutes}min`;
   }
 
+  function formatCompactDate(value) {
+    if (!value) return '--';
+    try {
+      return new Intl.DateTimeFormat('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date(value));
+    } catch (_) {
+      return '--';
+    }
+  }
+
+  function syncContactsUrl() {
+    const url = new URL(window.location.href);
+    url.searchParams.set('page', String(contactsPage));
+    url.searchParams.set('per_page', String(contactsPerPage));
+    if (contactsFilter) url.searchParams.set('status', contactsFilter);
+    else url.searchParams.delete('status');
+    window.history.replaceState({}, '', url);
+  }
+
   function getProgressMetrics(currentStats) {
     const cycle = currentStats.current_cycle || {};
     const cycleSent = Number(cycle.sent || 0);
@@ -255,6 +303,65 @@
       cyclePending,
       cycleTotal,
       isReopenedQueue,
+    };
+  }
+
+  function deriveFallbackResultsFromStats(currentStats) {
+    const sent = Number(currentStats.sent || 0);
+    const failed = Number(currentStats.failed || 0);
+    const pending = Number(currentStats.pending || 0);
+    const invalid = Number(currentStats.invalid || 0);
+    const valid = Number(currentStats.valid || 0);
+    const total = Number(currentStats.total || 0);
+    const processed = sent + failed;
+    const successRate = processed > 0 ? Math.round((sent / processed) * 100) : 0;
+    const coverageRate = valid > 0 ? Math.round((processed / valid) * 100) : 0;
+    const durationSeconds =
+      currentStats.started_at && currentStats.finished_at
+        ? Math.max(0, Math.round((new Date(currentStats.finished_at).getTime() - new Date(currentStats.started_at).getTime()) / 1000))
+        : 0;
+    return {
+      headline: currentStats.status === 'completed' ? 'Campanha concluida' : 'Resultados parciais',
+      summary:
+        'Resumo carregado via stats basicos. O detalhamento completo de resultados nao respondeu nesta atualizacao.',
+      processed,
+      success_rate: successRate,
+      failure_rate: Math.max(0, 100 - successRate),
+      coverage_rate: coverageRate,
+      duration_seconds: durationSeconds,
+      distribution: { sent, failed, pending, invalid, valid, total },
+      top_failures: [],
+      started_at: currentStats.started_at || null,
+      finished_at: currentStats.finished_at || null,
+      is_fallback: true,
+    };
+  }
+
+  function deriveFallbackActivityFromStats(currentStats) {
+    const sent = Number(currentStats.sent || 0);
+    const failed = Number(currentStats.failed || 0);
+    const fallbackMessage =
+      overviewFailureReason === 'not_found'
+        ? 'Atividade detalhada indisponivel no backend atual. Reinicie o servidor para habilitar a visao completa.'
+        : 'Nao foi possivel carregar a atividade detalhada neste momento.';
+    return {
+      total_events: sent + failed,
+      summary_cards: [
+        { key: 'state', label: 'Mudancas de estado', count: 0, tone: 'info' },
+        { key: 'success', label: 'Entregas confirmadas', count: sent, tone: 'success' },
+        { key: 'retry', label: 'Novas tentativas', count: 0, tone: 'warn' },
+        { key: 'failure', label: 'Falhas tecnicas', count: failed, tone: 'error' },
+      ],
+      milestones: [
+        {
+          title: 'Detalhamento indisponivel',
+          summary: fallbackMessage,
+          tone: 'warn',
+          time: currentStats.updated_at || new Date().toISOString(),
+        },
+      ],
+      incidents: [],
+      is_fallback: true,
     };
   }
 
@@ -317,7 +424,7 @@
     if (uiState === 'ready-to-start') items.push({ key: 'dryRun', label: 'Simular novamente' });
     if (uiState === 'running') {
       items.push({ key: 'refresh', label: actionLabels.refresh });
-      items.push({ key: 'showLogs', label: 'Ver logs' });
+      items.push({ key: 'showLogs', label: actionLabels.showLogs });
     }
     if (uiState === 'paused') {
       items.push({ key: 'viewResults', label: 'Ver progresso' });
@@ -327,7 +434,7 @@
       if (Number(currentStats.failed || 0) > 0 || uiState === 'completed') {
         items.push({ key: 'exportFailures', label: actionLabels.exportFailures, href: `/campaigns/${campaignId}/failures/export` });
       }
-      items.push({ key: 'showLogs', label: 'Ver logs' });
+      items.push({ key: 'showLogs', label: actionLabels.showLogs });
     }
     return items.slice(0, 3);
   }
@@ -451,6 +558,145 @@
     `;
   }
 
+  function renderResults(currentStats, payload) {
+    const metrics = payload || {};
+    const distribution = metrics.distribution || {};
+    const processed = Number(metrics.processed || 0);
+
+    resultsHeadline.textContent = metrics.headline || 'Resultados da campanha';
+    resultsSummary.textContent =
+      metrics.summary || 'Os principais indicadores da campanha aparecem aqui quando houver execucao suficiente.';
+    resultsSuccessRate.textContent = `${Math.round(Number(metrics.success_rate || 0))}%`;
+    resultsCoverageRate.textContent = `${Math.round(Number(metrics.coverage_rate || 0))}%`;
+    resultsDuration.textContent = formatDuration(Number(metrics.duration_seconds || 0));
+    resultsWindow.textContent =
+      metrics.started_at
+        ? `${formatCompactDate(metrics.started_at)}${metrics.finished_at ? ` ate ${formatCompactDate(metrics.finished_at)}` : ' ate agora'}`
+        : 'Aguardando execucao';
+
+    if (currentStats.status === 'completed' && Number(currentStats.failed || 0) === 0) {
+      resultsInsightPill.textContent = 'Entrega concluida sem falhas';
+    } else if (Number(currentStats.failed || 0) > 0) {
+      resultsInsightPill.textContent = `${currentStats.failed} falha${Number(currentStats.failed || 0) > 1 ? 's' : ''} precisa${Number(currentStats.failed || 0) > 1 ? 'm' : ''} de revisao`;
+    } else if (processed > 0) {
+      resultsInsightPill.textContent = `${processed} contato${processed > 1 ? 's' : ''} ja processado${processed > 1 ? 's' : ''}`;
+    } else {
+      resultsInsightPill.textContent = 'Sem volume processado ainda';
+    }
+
+    resultsDistribution.innerHTML = [
+      { label: 'Enviados', value: distribution.sent || 0, tone: 'success' },
+      { label: 'Falhas', value: distribution.failed || 0, tone: 'error' },
+      { label: 'Pendentes', value: distribution.pending || 0, tone: 'warn' },
+      { label: 'Invalidos', value: distribution.invalid || 0, tone: 'muted' },
+    ]
+      .map(
+        (item) => `
+          <div class="distribution-pill distribution-pill--${item.tone}">
+            <span>${escapeHtml(item.label)}</span>
+            <strong>${escapeHtml(item.value)}</strong>
+          </div>
+        `,
+      )
+      .join('');
+
+    const failures = Array.isArray(metrics.top_failures) ? metrics.top_failures : [];
+    if (!failures.length) {
+      resultsFailures.innerHTML = `
+        <div class="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-500">
+          ${metrics.is_fallback ? 'Sem detalhamento de falhas nesta atualizacao.' : 'Nenhuma falha relevante identificada nesta campanha.'}
+        </div>
+      `;
+      return;
+    }
+
+    resultsFailures.innerHTML = failures
+      .map(
+        (item) => `
+          <article class="incident-card incident-card--${escapeHtml(item.tone || 'error')}">
+            <div class="flex items-center justify-between gap-3">
+              <p class="text-sm font-semibold text-ink">${escapeHtml(item.label)}</p>
+              <span class="rounded-full bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">${escapeHtml(item.count)} ocorrencia${Number(item.count) > 1 ? 's' : ''}</span>
+            </div>
+          </article>
+        `,
+      )
+      .join('');
+  }
+
+  function renderActivity(payload) {
+    const activity = payload || {};
+    const summaryCards = Array.isArray(activity.summary_cards) ? activity.summary_cards : [];
+    const milestones = Array.isArray(activity.milestones) ? activity.milestones : [];
+    const incidents = Array.isArray(activity.incidents) ? activity.incidents : [];
+
+    activityTotalEvents.textContent = `${Number(activity.total_events || 0)} evento${Number(activity.total_events || 0) === 1 ? '' : 's'}`;
+    activitySummaryGrid.innerHTML = summaryCards
+      .map(
+        (card) => `
+          <article class="activity-summary-card activity-summary-card--${escapeHtml(card.tone || 'info')}">
+            <p class="metric-label">${escapeHtml(card.label)}</p>
+            <p class="mt-3 text-2xl font-semibold text-ink">${escapeHtml(card.count || 0)}</p>
+          </article>
+        `,
+      )
+      .join('');
+
+    activityMilestones.innerHTML = milestones.length
+      ? milestones
+          .map(
+            (item) => `
+              <article class="activity-item activity-item--${escapeHtml(item.tone || 'info')}">
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold text-ink">${escapeHtml(item.title)}</p>
+                    <p class="mt-1 text-sm leading-6 text-slate-600">${escapeHtml(item.summary)}</p>
+                  </div>
+                  <time class="activity-item__time">${escapeHtml(formatCompactDate(item.time))}</time>
+                </div>
+              </article>
+            `,
+          )
+          .join('')
+      : `
+          <div class="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-500">
+            ${activity.is_fallback ? 'Detalhamento operacional indisponivel nesta atualizacao.' : 'Nenhum marco relevante registrado ainda.'}
+          </div>
+        `;
+
+    activityIncidents.innerHTML = incidents.length
+      ? incidents
+          .map(
+            (item) => `
+              <article class="incident-card incident-card--${escapeHtml(item.tone || 'info')}">
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold text-ink">${escapeHtml(item.title)}</p>
+                    <p class="mt-1 text-sm leading-6 text-slate-600">${escapeHtml(item.summary)}</p>
+                  </div>
+                  <div class="text-right">
+                    <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">${escapeHtml(item.count)}x</p>
+                    <p class="mt-1 text-xs text-slate-500">${escapeHtml(formatCompactDate(item.time))}</p>
+                  </div>
+                </div>
+                <details class="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                  <summary class="cursor-pointer text-sm font-semibold text-slate-700">Ver detalhes tecnicos</summary>
+                  <div class="mt-3 grid gap-2 text-sm text-slate-500">
+                    <p>Classe de erro: ${escapeHtml(item.error_class || '-')}</p>
+                    <p>Status HTTP: ${escapeHtml(item.http_status || '-')}</p>
+                  </div>
+                </details>
+              </article>
+            `,
+          )
+          .join('')
+      : `
+          <div class="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-500">
+            Nenhum incidente agrupado para exibir.
+          </div>
+        `;
+  }
+
   function setButtonLoading(button, label, active) {
     if (!button) return;
     if (active) {
@@ -537,6 +783,15 @@
     const items = payload.items || [];
     const pagination = payload.pagination || {};
     contactsMeta.textContent = `Total exibido: ${items.length} de ${pagination.total || 0} registros. Pagina ${pagination.page || 1} de ${pagination.total_pages || 1}.`;
+    contactsPage = Number(pagination.page || 1);
+    contactsPerPage = Number(pagination.page_size || contactsPerPage || 25);
+    if (contactsPerPageSelect) contactsPerPageSelect.value = String(contactsPerPage);
+    if (contactsPageIndicator) {
+      contactsPageIndicator.textContent = `Pagina ${pagination.page || 1} de ${pagination.total_pages || 1}`;
+    }
+    if (contactsPrevPage) contactsPrevPage.disabled = (pagination.page || 1) <= 1;
+    if (contactsNextPage) contactsNextPage.disabled = (pagination.page || 1) >= (pagination.total_pages || 1);
+    syncContactsUrl();
     const canDeleteContacts = ['draft', 'ready', 'paused'].includes(String(stats.status || '').toLowerCase());
 
     if (!items.length) {
@@ -595,13 +850,34 @@
     renderProgress(stats);
     renderExecutionBar(stats);
     renderUploadSummary(stats);
+    const safeResults = overview?.results || deriveFallbackResultsFromStats(stats);
+    const safeActivity = overview?.activity || deriveFallbackActivityFromStats(stats);
+    renderResults(stats, safeResults);
+    renderActivity(safeActivity);
     updatePrimaryButtons(uiState, stats);
+  }
+
+  async function fetchOverview() {
+    try {
+      const response = await fetch(`/campaigns/${campaignId}/overview`);
+      if (!response.ok) {
+        overview = { results: null, activity: null };
+        overviewFailureReason = response.status === 404 ? 'not_found' : 'http_error';
+        return;
+      }
+      overview = await response.json();
+      overviewFailureReason = null;
+    } catch (_) {
+      overview = { results: null, activity: null };
+      overviewFailureReason = 'network_error';
+    }
   }
 
   async function pollContacts() {
     try {
       const params = new URLSearchParams();
       params.set('page', String(contactsPage));
+      params.set('per_page', String(contactsPerPage));
       if (contactsFilter) params.set('status', contactsFilter);
       const response = await fetch(`/campaigns/${campaignId}/contacts?${params.toString()}`);
       if (!response.ok) return;
@@ -616,11 +892,23 @@
     pollingLabel.textContent = 'Atualizando dados...';
     await fetchBridgeState();
     try {
-      const response = await fetch(`/campaigns/${campaignId}/stats`);
-      if (!response.ok) throw new Error('Falha ao consultar stats');
-      stats = await response.json();
+      const [statsResponse] = await Promise.all([
+        fetch(`/campaigns/${campaignId}/stats`),
+        fetchOverview(),
+      ]);
+      if (!statsResponse.ok) throw new Error('Falha ao consultar stats');
+      stats = await statsResponse.json();
       renderUi();
       await pollContacts();
+      if (overviewFailureReason && !overviewFailureWarned) {
+        const message =
+          overviewFailureReason === 'not_found'
+            ? 'Visao detalhada indisponivel no backend atual. Reinicie o servidor da aplicacao.'
+            : 'Falha temporaria ao carregar resultados e atividade detalhados.';
+        showToast('warn', message);
+        overviewFailureWarned = true;
+      }
+      if (!overviewFailureReason) overviewFailureWarned = false;
     } catch (_) {
       showToast('warn', 'Falha temporaria ao atualizar os dados da campanha.');
     } finally {
@@ -640,13 +928,14 @@
     };
 
     if (actionKey === 'viewResults') {
-      document.querySelector('.shadow-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      resultsSection?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      window.setTimeout(() => resultsSection?.focus(), 180);
       return;
     }
 
     if (actionKey === 'showLogs') {
       logsPanel?.classList.remove('hidden');
-      logsToggle.textContent = 'Ocultar logs';
+      logsToggle.textContent = 'Ocultar atividade tecnica';
       logsPanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
     }
@@ -871,11 +1160,30 @@
   logsToggle?.addEventListener('click', () => {
     const hidden = logsPanel.classList.contains('hidden');
     logsPanel.classList.toggle('hidden');
-    logsToggle.textContent = hidden ? 'Ocultar logs' : 'Mostrar logs';
+    logsToggle.textContent = hidden ? 'Ocultar atividade tecnica' : 'Mostrar atividade tecnica';
   });
 
   executionRefreshButton?.addEventListener('click', async () => {
     await pollAll();
+  });
+
+  contactsPerPageSelect?.addEventListener('change', async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement)) return;
+    contactsPerPage = Number(target.value || '25');
+    contactsPage = 1;
+    await pollContacts();
+  });
+
+  contactsPrevPage?.addEventListener('click', async () => {
+    if (contactsPage <= 1) return;
+    contactsPage -= 1;
+    await pollContacts();
+  });
+
+  contactsNextPage?.addEventListener('click', async () => {
+    contactsPage += 1;
+    await pollContacts();
   });
 
   executionAbortButton?.addEventListener('click', () => {
