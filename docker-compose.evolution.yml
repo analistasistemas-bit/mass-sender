@@ -1,0 +1,49 @@
+services:
+  evolution-redis:
+    image: redis:7-alpine
+    container_name: evolution-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+
+  evolution-postgres:
+    image: postgres:16-alpine
+    container_name: evolution-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=evolution
+      - POSTGRES_PASSWORD=evolution
+      - POSTGRES_DB=evolution
+    ports:
+      - '5432:5432'
+    volumes:
+      - evolution_postgres_data:/var/lib/postgresql/data
+
+  evolution-api:
+    image: evoapicloud/evolution-api:v2.3.7
+    container_name: evolution-api
+    restart: unless-stopped
+    depends_on:
+      - evolution-redis
+      - evolution-postgres
+    ports:
+      - '8080:8080'
+    volumes:
+      - evolution_instances:/evolution/instances
+    environment:
+      - AUTHENTICATION_API_KEY=local-dev-key
+      - SERVER_TYPE=http
+      - SERVER_PORT=8080
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - NO_PROXY=localhost,127.0.0.1,evolution-postgres,evolution-redis
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://evolution:evolution@evolution-postgres:5432/evolution?schema=public
+      - DATABASE_ENABLED=true
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://evolution-redis:6379/0
+      - CACHE_REDIS_PREFIX_KEY=evolution
+
+volumes:
+  evolution_postgres_data:
+  evolution_instances:

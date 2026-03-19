@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Login - Mass Sender</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Mass Sender</h1>
+      <p>Informe a senha administrativa.</p>
+      {% if error %}
+      <div class="alert">{{ error }}</div>
+      {% endif %}
+      <form method="post" action="/login" class="stack">
+        <input type="password" name="password" placeholder="Senha" required />
+        <button type="submit">Entrar</button>
+      </form>
+    </main>
+    <script src="/static/common.js"></script>
+  </body>
+</html>

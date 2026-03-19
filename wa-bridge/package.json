@@ -1,0 +1,21 @@
+{
+  "name": "mass-sender-wa-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local WhatsApp bridge for the mass-sender FastAPI app",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18 <25"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "stop": "pkill -f 'node server.js' || true",
+    "restart": "npm run stop && npm run start",
+    "fetch-qr": "node fetch-qr.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "qrcode": "^1.5.4",
+    "whatsapp-web.js": "^1.34.6"
+  }
+}

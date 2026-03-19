@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ campaign.name }} - Operacao guiada</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              ink: '#102033',
+              muted: '#62748a',
+              shell: '#eef4f7',
+              line: '#d7e1e8',
+              brand: '#0f6cbd',
+              success: '#1f8f5f',
+              warn: '#b7791f',
+              danger: '#c05656',
+            },
+            fontFamily: {
+              sans: ['IBM Plex Sans', 'sans-serif'],
+              display: ['Sora', 'sans-serif'],
+            },
+            boxShadow: {
+              panel: '0 18px 42px rgba(15, 23, 42, 0.08)',
+            },
+          },
+        },
+      };
+    </script>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body class="min-h-screen bg-shell text-ink">
+    <div class="absolute inset-x-0 top-0 -z-10 h-[440px] bg-[radial-gradient(circle_at_top_left,_rgba(15,108,189,0.16),_transparent_45%),radial-gradient(circle_at_top_right,_rgba(31,143,95,0.14),_transparent_38%),linear-gradient(180deg,_#f8fbfd_0%,_#eef4f7_100%)]"></div>
+    <main
+      class="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 lg:px-8"
+      data-campaign-id="{{ campaign.id }}"
+      data-status="{{ campaign.status }}"
+      data-pending="{{ stats.pending }}"
+      data-valid="{{ stats.valid }}"
+      data-invalid="{{ stats.invalid }}"
+      data-total="{{ stats.total }}"
+      data-test-required="{{ campaign.is_test_required }}"
+      data-test-completed-at="{{ stats.test_completed_at or '' }}"
+      data-contacts-page="{{ contacts_page }}"
+      data-contacts-filter="{{ contacts_status_filter }}"
+      data-initial-logs="{{ logs|length }}"
+    >
+      <a href="/" class="inline-flex items-center gap-2 text-sm font-semibold text-brand">← Voltar para operacao</a>
+
+      <section class="sticky top-4 z-20 rounded-[32px] border border-white/70 bg-white/95 p-6 shadow-panel backdrop-blur">
+        <div class="flex flex-col gap-6">
+          <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div class="space-y-3">
+              <p class="text-sm font-semibold uppercase tracking-[0.25em] text-brand">Console da campanha</p>
+              <div class="flex flex-wrap items-center gap-3">
+                <h1 class="font-display text-4xl tracking-tight text-ink">{{ campaign.name }}</h1>
+                <span id="campaign-status-badge" class="status-badge" data-state="{{ campaign.status }}">{{ campaign.status }}</span>
+                <span id="bridge-state-badge" class="status-badge status-badge--muted">Verificando WhatsApp</span>
+              </div>
+              <p id="status-narrative" data-testid="status-narrative" class="max-w-3xl text-base leading-7 text-slate-600">
+                Carregando estado operacional da campanha.
+              </p>
+            </div>
+            <div class="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">
+                <span class="pulse-dot"></span>
+                <span id="polling-label">Atualizando dados...</span>
+              </div>
+              <p id="last-updated" class="mt-2 text-sm text-slate-500">Atualizacao inicial em andamento.</p>
+            </div>
+          </div>
+
+          <div data-testid="campaign-stepper" class="stepper-grid">
+            {% for step in ['Conectar WhatsApp', 'Upload CSV', 'Validar', 'Testar', 'Enviar', 'Concluido'] %}
+            <div class="stepper-item" data-step-key="{{ loop.index0 }}">
+              <span class="stepper-item__dot">{{ loop.index }}</span>
+              <span class="stepper-item__label">{{ step }}</span>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+
+      <section class="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <article class="min-w-0 rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-panel">
+          <div class="flex flex-col gap-6">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p class="text-sm font-semibold uppercase tracking-[0.25em] text-brand">Acao principal</p>
+                <h2 id="primary-title" class="mt-2 font-display text-3xl text-ink">Preparando campanha</h2>
+                <p id="primary-description" class="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
+                  O sistema vai destacar apenas a proxima decisao importante.
+                </p>
+              </div>
+              <div class="rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
+                <p class="font-semibold text-ink">Regra ativa</p>
+                <p id="primary-rule" class="mt-1">Uma unica acao dominante por estado.</p>
+              </div>
+            </div>
+
+            <div data-testid="primary-action" class="rounded-[24px] border border-brand/15 bg-[linear-gradient(135deg,_rgba(15,108,189,0.12),_rgba(255,255,255,1))] p-5">
+              <div class="flex flex-col gap-4">
+                <button id="primary-action-button" type="button" class="primary-button w-full justify-center text-base">
+                  Carregando...
+                </button>
+                <div id="secondary-actions" class="flex flex-wrap gap-3"></div>
+                <div id="destructive-actions" class="flex flex-wrap gap-3 border-t border-slate-200 pt-4"></div>
+              </div>
+            </div>
+
+            <div id="action-insight" class="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <div class="flex items-start gap-3">
+                <div class="mt-1 h-3 w-3 rounded-full bg-brand"></div>
+                <div>
+                  <p class="text-sm font-semibold text-ink">Orientacao do sistema</p>
+                  <p id="action-insight-text" class="mt-2 text-sm leading-6 text-slate-600">
+                    O fluxo sera ajustado automaticamente conforme a campanha avanca.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="min-w-0 rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-panel">
+          <div class="flex flex-col gap-5">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <p class="text-sm font-semibold uppercase tracking-[0.25em] text-brand">Progresso</p>
+                <h2 class="mt-2 font-display text-2xl text-ink">Acompanhamento da execucao</h2>
+              </div>
+              <span id="progress-caption" class="rounded-full bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">0%</span>
+            </div>
+            <div class="overflow-hidden rounded-full bg-slate-100">
+              <div id="progress-fill" class="progress-fill h-4 rounded-full" style="width: 0%"></div>
+            </div>
+            <p id="progress-summary" class="text-sm leading-6 text-slate-600">Nenhuma atividade registrada ainda.</p>
+            <dl class="stats-grid">
+              <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <dt class="metric-label">Enviados</dt>
+                <dd id="sent" class="mt-2 text-2xl font-semibold text-ink">{{ stats.sent }}</dd>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <dt class="metric-label">Falhas</dt>
+                <dd id="failed" class="mt-2 text-2xl font-semibold text-ink">{{ stats.failed }}</dd>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <dt class="metric-label">Pendentes</dt>
+                <dd id="pending" class="mt-2 text-2xl font-semibold text-ink">{{ stats.pending }}</dd>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <dt class="metric-label">Total</dt>
+                <dd id="total" class="mt-2 text-2xl font-semibold text-ink">{{ stats.total }}</dd>
+              </div>
+            </dl>
+            <div class="grid gap-3 md:grid-cols-3">
+              <div class="rounded-2xl border border-slate-200 bg-white p-4">
+                <p class="metric-label">Tempo estimado</p>
+                <p id="eta-value" class="mt-2 text-lg font-semibold text-ink">--</p>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-white p-4">
+                <p class="metric-label">Velocidade</p>
+                <p id="speed-value" class="mt-2 text-lg font-semibold text-ink">--</p>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-white p-4">
+                <p class="metric-label">Resultado</p>
+                <p id="result-value" class="mt-2 text-lg font-semibold text-ink">Aguardando</p>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid gap-6 xl:grid-cols-[0.85fr_1.15fr]">
+        <article class="min-w-0 rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-panel">
+          <div class="flex flex-col gap-6">
+            <div>
+              <p class="text-sm font-semibold uppercase tracking-[0.25em] text-brand">Mensagem e validacao</p>
+              <h2 class="mt-2 font-display text-2xl text-ink">Prepare a campanha antes do envio</h2>
+            </div>
+
+            <form id="template-form" method="post" action="/campaigns/{{ campaign.id }}/template" class="space-y-4">
+              <label class="space-y-2">
+                <span class="text-sm font-semibold text-slate-700">Mensagem da campanha</span>
+                <textarea
+                  name="message_template"
+                  rows="5"
+                  class="w-full rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3 text-base leading-7 outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/10"
+                >{{ campaign.message_template }}</textarea>
+              </label>
+              <div class="flex flex-wrap gap-3">
+                <button type="submit" id="save-template-button" class="secondary-button">Salvar mensagem</button>
+                <p class="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+                  Variavel disponivel: {{'{{nome}}'}}
+                </p>
+              </div>
+            </form>
+
+            <form id="upload-form" class="space-y-4">
+              <div class="rounded-[24px] border border-dashed border-slate-300 bg-slate-50 p-5">
+                <label class="space-y-2">
+                  <span class="text-sm font-semibold text-slate-700">Arquivo CSV</span>
+                  <input
+                    type="file"
+                    name="csv_file"
+                    accept=".csv"
+                    required
+                    class="block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600"
+                  />
+                </label>
+                <p class="mt-4 text-sm leading-6 text-slate-500">
+                  Campos aceitos: <code>nome,telefone,email</code> ou o formato legado <code>NOME_CLIENTE,TELEFONE,E_MAIL</code>.
+                </p>
+              </div>
+              <div class="flex flex-wrap gap-3">
+                <button type="submit" id="upload-submit" class="secondary-button">Enviar arquivo CSV</button>
+                <button type="button" id="manual-contact-toggle" class="secondary-button">Adicionar cliente manualmente</button>
+              </div>
+            </form>
+
+            <form id="manual-contact-form" class="hidden space-y-4 rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <div>
+                <p class="text-sm font-semibold uppercase tracking-[0.2em] text-brand">Cadastro manual</p>
+                <p class="mt-2 text-sm leading-6 text-slate-600">Preencha os dados do cliente para adicionar um contato sem usar CSV.</p>
+              </div>
+              <div class="grid gap-4 md:grid-cols-2">
+                <label class="space-y-2 md:col-span-2">
+                  <span class="text-sm font-semibold text-slate-700">Nome <span class="text-danger">*</span></span>
+                  <input
+                    type="text"
+                    name="name"
+                    required
+                    maxlength="120"
+                    class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-brand focus:ring-4 focus:ring-brand/10"
+                  />
+                </label>
+                <label class="space-y-2">
+                  <span class="text-sm font-semibold text-slate-700">Telefone <span class="text-danger">*</span></span>
+                  <input
+                    type="text"
+                    name="phone"
+                    required
+                    maxlength="30"
+                    placeholder="+55 81999999999"
+                    class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-brand focus:ring-4 focus:ring-brand/10"
+                  />
+                  <p class="text-xs text-slate-500">Formato: <code>+55 DDD + numero</code>. Exemplo: <code>+55 81999999999</code>.</p>
+                </label>
+                <label class="space-y-2">
+                  <span class="text-sm font-semibold text-slate-700">E-mail <span class="text-slate-500">(opcional)</span></span>
+                  <input
+                    type="email"
+                    name="email"
+                    maxlength="255"
+                    placeholder="cliente@empresa.com"
+                    class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-brand focus:ring-4 focus:ring-brand/10"
+                  />
+                </label>
+              </div>
+              <div class="flex flex-wrap gap-3">
+                <button type="submit" id="manual-contact-submit" class="secondary-button">Salvar cliente</button>
+                <button type="button" id="manual-contact-cancel" class="secondary-button">Fechar</button>
+              </div>
+              <p id="manual-contact-feedback" class="text-sm text-slate-500">Nome e telefone sao obrigatorios.</p>
+            </form>
+
+            <div id="upload-summary" class="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <p class="text-sm font-semibold text-ink">Nenhum CSV enviado ainda.</p>
+              <p class="mt-2 text-sm leading-6 text-slate-500">Envie sua base para liberar a simulacao e o teste controlado.</p>
+            </div>
+          </div>
+        </article>
+
+        <article class="min-w-0 rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-panel">
+          <div class="flex flex-col gap-6">
+            <div class="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p class="text-sm font-semibold uppercase tracking-[0.25em] text-brand">Dados</p>
+                <h2 class="mt-2 font-display text-2xl text-ink">Contatos importados</h2>
+              </div>
+              <form method="get" action="/campaigns/{{ campaign.id }}" class="flex w-full flex-wrap items-center gap-3 lg:w-auto lg:justify-end">
+                <label for="status-filter-trigger" class="whitespace-nowrap text-sm font-semibold text-slate-700">Filtrar status</label>
+                <div class="filter-select-shell">
+                  <input type="hidden" id="status-filter-input" name="status" value="{{ contacts_status_filter or '' }}" />
+                  <button
+                    id="status-filter-trigger"
+                    type="button"
+                    class="filter-select-trigger"
+                    aria-haspopup="listbox"
+                    aria-expanded="false"
+                    aria-controls="status-filter-menu"
+                    data-testid="status-filter-trigger"
+                  >
+                    <span id="status-filter-label">Todos</span>
+                    <svg class="h-4 w-4 text-slate-500 transition-transform" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                      <path d="m5 7.5 5 5 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </button>
+                  <div id="status-filter-menu" class="filter-select-menu hidden" role="listbox" aria-labelledby="status-filter-trigger">
+                    <button type="button" class="filter-option" role="option" data-value="">
+                      <span class="filter-option__check" aria-hidden="true">✓</span>
+                      <span>Todos</span>
+                    </button>
+                    <button type="button" class="filter-option" role="option" data-value="pending">
+                      <span class="filter-option__check" aria-hidden="true">✓</span>
+                      <span>Prontos para envio</span>
+                    </button>
+                    <button type="button" class="filter-option" role="option" data-value="processing">
+                      <span class="filter-option__check" aria-hidden="true">✓</span>
+                      <span>Em processamento</span>
+                    </button>
+                    <button type="button" class="filter-option" role="option" data-value="sent">
+                      <span class="filter-option__check" aria-hidden="true">✓</span>
+                      <span>Enviados</span>
+                    </button>
+                    <button type="button" class="filter-option" role="option" data-value="failed">
+                      <span class="filter-option__check" aria-hidden="true">✓</span>
+                      <span>Falhas</span>
+                    </button>
+                    <button type="button" class="filter-option" role="option" data-value="invalid">
+                      <span class="filter-option__check" aria-hidden="true">✓</span>
+                      <span>Invalidos</span>
+                    </button>
+                  </div>
+                </div>
+                <button type="submit" class="secondary-button whitespace-nowrap">Aplicar filtro</button>
+              </form>
+            </div>
+
+            <div class="data-summary-grid">
+              <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p class="metric-label">Validos</p>
+                <p id="valid-count" class="mt-2 text-2xl font-semibold text-ink">{{ stats.valid }}</p>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p class="metric-label">Invalidos</p>
+                <p id="invalid-count" class="mt-2 text-2xl font-semibold text-ink">{{ stats.invalid }}</p>
+              </div>
+              <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p class="metric-label">Resumo atual</p>
+                <p id="contacts-ready-copy" class="mt-2 text-lg font-semibold text-ink">Aguardando importacao</p>
+              </div>
+            </div>
+
+            <p id="contacts-meta" class="text-sm leading-6 text-slate-500">
+              Total exibido: {{ contacts|length }} de {{ contacts_total }} registros. Pagina {{ contacts_page }} de {{ contacts_total_pages }}.
+            </p>
+
+            <div data-testid="contacts-table-wrap" class="overflow-x-auto rounded-[24px] border border-slate-200">
+              <table class="min-w-full divide-y divide-slate-200 text-sm">
+                <thead class="bg-slate-50 text-left text-xs uppercase tracking-[0.25em] text-slate-500">
+                  <tr>
+                    <th class="px-4 py-3">ID</th>
+                    <th class="px-4 py-3">Nome</th>
+                    <th class="px-4 py-3">Telefone CSV</th>
+                    <th class="px-4 py-3">Telefone valido</th>
+                    <th class="px-4 py-3">Email</th>
+                    <th class="px-4 py-3">Status</th>
+                    <th class="px-4 py-3">Observacao</th>
+                    <th class="px-4 py-3">Acao</th>
+                  </tr>
+                </thead>
+                <tbody id="contacts-body" class="divide-y divide-slate-100 bg-white">
+                  {% for c in contacts %}
+                  <tr>
+                    <td class="px-4 py-3">{{ c.id }}</td>
+                    <td class="px-4 py-3">{{ c.name }}</td>
+                    <td class="px-4 py-3">{{ c.phone_raw }}</td>
+                    <td class="px-4 py-3">{{ c.phone_e164 or '-' }}</td>
+                    <td class="px-4 py-3">{{ c.email }}</td>
+                    <td class="px-4 py-3">{{ c.status }}</td>
+                    <td class="px-4 py-3">{{ c.error_message or '-' }}</td>
+                    <td class="px-4 py-3">
+                      {% if campaign.status in ['draft', 'ready', 'paused'] %}
+                      <button
+                        type="button"
+                        class="table-action-button table-action-button--danger"
+                        data-contact-action="delete"
+                        data-contact-id="{{ c.id }}"
+                        data-contact-name="{{ c.name }}"
+                      >
+                        Excluir
+                      </button>
+                      {% else %}
+                      <span class="text-xs font-semibold uppercase tracking-[0.1em] text-slate-400">Bloqueado durante envio</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                  {% else %}
+                  <tr>
+                    <td colspan="8" class="px-4 py-10 text-center text-sm text-slate-500">Nenhum contato para este filtro.</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+
+            <div class="flex flex-wrap gap-3">
+              {% if contacts_page > 1 %}
+              <a
+                class="secondary-button"
+                href="/campaigns/{{ campaign.id }}?page={{ contacts_page - 1 }}{% if contacts_status_filter %}&status={{ contacts_status_filter }}{% endif %}"
+                >Pagina anterior</a
+              >
+              {% endif %}
+              {% if contacts_page < contacts_total_pages %}
+              <a
+                class="secondary-button"
+                href="/campaigns/{{ campaign.id }}?page={{ contacts_page + 1 }}{% if contacts_status_filter %}&status={{ contacts_status_filter }}{% endif %}"
+                >Proxima pagina</a
+              >
+              {% endif %}
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-panel">
+        <div class="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p class="text-sm font-semibold uppercase tracking-[0.25em] text-brand">Logs inteligentes</p>
+            <h2 class="mt-2 font-display text-2xl text-ink">Historico recente</h2>
+          </div>
+          <button type="button" id="logs-toggle" class="secondary-button">Mostrar logs</button>
+        </div>
+
+        <div id="logs-panel" data-testid="logs-panel" class="mt-6 hidden space-y-4">
+          <p class="sr-only">Historico recente</p>
+          {% if logs %}
+          {% for log in logs %}
+          {% set tone = 'info' %}
+          {% if log.event_type == 'send_failure' %}
+          {% set tone = 'error' %}
+          {% elif log.event_type == 'retry_scheduled' %}
+          {% set tone = 'warn' %}
+          {% elif 'success' in log.event_type %}
+          {% set tone = 'success' %}
+          {% endif %}
+          <article class="log-card log-card--{{ tone }}">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p class="text-sm font-semibold text-ink">{{ log.event_type.replace('_', ' ').title() }}</p>
+                <p class="mt-1 text-sm leading-6 text-slate-600">{{ log.payload_excerpt or 'Sem detalhes adicionais.' }}</p>
+              </div>
+              <p class="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">{{ log.created_at }}</p>
+            </div>
+            <details class="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+              <summary class="cursor-pointer text-sm font-semibold text-slate-700">Ver detalhes tecnicos</summary>
+              <div class="mt-3 grid gap-2 text-sm text-slate-500">
+                <p>Contato: {{ log.contact_id or '-' }}</p>
+                <p>Status HTTP: {{ log.http_status or '-' }}</p>
+                <p>Classe de erro: {{ log.error_class or '-' }}</p>
+              </div>
+            </details>
+          </article>
+          {% endfor %}
+          {% else %}
+          <div class="rounded-[24px] border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
+            <p class="text-sm font-semibold text-ink">Sem logs recentes.</p>
+            <p class="mt-2 text-sm leading-6 text-slate-500">Os eventos da campanha vao aparecer aqui quando houver atividade.</p>
+          </div>
+          {% endif %}
+        </div>
+      </section>
+    </main>
+
+    <section
+      id="execution-progress-bar"
+      data-testid="execution-progress-bar"
+      class="execution-bar hidden"
+      aria-live="polite"
+    >
+      <div class="execution-bar__content">
+        <div class="execution-bar__meta">
+          <p class="execution-bar__eyebrow">Execucao ativa</p>
+          <p id="execution-progress-title" class="execution-bar__title">Envio em andamento</p>
+          <p id="execution-progress-copy" class="execution-bar__copy">A campanha continua mesmo se voce sair desta pagina.</p>
+        </div>
+        <div class="execution-bar__track-wrap">
+          <div class="execution-bar__track">
+            <div id="execution-progress-fill" class="execution-bar__fill" style="width: 0%"></div>
+          </div>
+          <p id="execution-progress-stats" class="execution-bar__stats">0 de 0 processados</p>
+        </div>
+        <div class="execution-bar__actions">
+          <button type="button" id="execution-refresh-button" class="secondary-button">Atualizar agora</button>
+          <button type="button" id="execution-abort-button" class="danger-button">Abortar</button>
+        </div>
+      </div>
+    </section>
+
+    <dialog id="confirm-modal" class="app-modal">
+      <form method="dialog" class="app-modal__card">
+        <p class="text-xs font-semibold uppercase tracking-[0.25em] text-danger">Confirmacao critica</p>
+        <h2 id="confirm-title" class="mt-3 font-display text-2xl text-ink">Confirmar acao</h2>
+        <p id="confirm-message" class="mt-3 text-sm leading-6 text-slate-600"></p>
+        <div class="mt-6 flex flex-wrap gap-3">
+          <button type="button" id="confirm-submit" class="danger-button">Confirmar</button>
+          <button type="button" id="confirm-cancel" class="secondary-button">Cancelar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <script src="/static/common.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
