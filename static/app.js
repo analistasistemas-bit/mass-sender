@@ -5,13 +5,21 @@
   const campaignId = root.dataset.campaignId;
   let contactsPage = Number(root.dataset.contactsPage || '1');
   let contactsPerPage = Number(root.dataset.contactsPerPage || '25');
-  const contactsFilter = (root.dataset.contactsFilter || '').trim();
+  let contactsFilter = (root.dataset.contactsFilter || '').trim();
   const isTestRequired = Number(root.dataset.testRequired || '1') !== 0;
 
   const statusBadge = document.getElementById('campaign-status-badge');
   const bridgeBadge = document.getElementById('bridge-state-badge');
   const statusNarrative = document.getElementById('status-narrative');
   const lastUpdated = document.getElementById('last-updated');
+  const workerServiceBadge = document.getElementById('worker-service-badge');
+  const workerServiceCopy = document.getElementById('worker-service-copy');
+  const bridgeServiceBadge = document.getElementById('bridge-service-badge');
+  const bridgeServiceCopy = document.getElementById('bridge-service-copy');
+  const serviceAlertPanel = document.getElementById('service-alert-panel');
+  const serviceAlertTitle = document.getElementById('service-alert-title');
+  const serviceAlertMessage = document.getElementById('service-alert-message');
+  const deleteCampaignButton = document.getElementById('delete-campaign-button');
   const pollingLabel = document.getElementById('polling-label');
   const primaryTitle = document.getElementById('primary-title');
   const primaryDescription = document.getElementById('primary-description');
@@ -23,6 +31,7 @@
   const progressCaption = document.getElementById('progress-caption');
   const progressFill = document.getElementById('progress-fill');
   const progressSummary = document.getElementById('progress-summary');
+  const dailyLimitSummary = document.getElementById('daily-limit-summary');
   const sentEl = document.getElementById('sent');
   const failedEl = document.getElementById('failed');
   const pendingEl = document.getElementById('pending');
@@ -30,11 +39,15 @@
   const validEl = document.getElementById('valid-count');
   const invalidEl = document.getElementById('invalid-count');
   const etaValue = document.getElementById('eta-value');
+  const etaNote = document.getElementById('eta-note');
   const speedValue = document.getElementById('speed-value');
+  const speedNote = document.getElementById('speed-note');
   const resultValue = document.getElementById('result-value');
+  const resultNote = document.getElementById('result-note');
   const contactsReadyCopy = document.getElementById('contacts-ready-copy');
   const contactsMeta = document.getElementById('contacts-meta');
   const contactsBody = document.getElementById('contacts-body');
+  const clearImportedContactsButton = document.getElementById('clear-imported-contacts');
   const contactsPerPageSelect = document.getElementById('contacts-per-page');
   const contactsPrevPage = document.getElementById('contacts-prev-page');
   const contactsNextPage = document.getElementById('contacts-next-page');
@@ -60,13 +73,21 @@
   const activityMilestones = document.getElementById('activity-milestones');
   const activityIncidents = document.getElementById('activity-incidents');
   const templateForm = document.getElementById('template-form');
+  const settingsForm = document.getElementById('settings-form');
   const uploadForm = document.getElementById('upload-form');
+  const csvFileInput = document.getElementById('csv-file-input');
   const manualContactToggle = document.getElementById('manual-contact-toggle');
   const manualContactForm = document.getElementById('manual-contact-form');
   const manualContactSubmit = document.getElementById('manual-contact-submit');
   const manualContactCancel = document.getElementById('manual-contact-cancel');
   const manualContactFeedback = document.getElementById('manual-contact-feedback');
   const saveTemplateButton = document.getElementById('save-template-button');
+  const saveSettingsButton = document.getElementById('save-settings-button');
+  const runtimeProfileBadge = document.getElementById('runtime-profile-badge');
+  const runtimeProfileCopy = document.getElementById('runtime-profile-copy');
+  const speedProfileBadge = document.getElementById('speed-profile-badge');
+  const speedProfileDescription = document.getElementById('speed-profile-description');
+  const speedProfileOptions = Array.from(document.querySelectorAll('.speed-profile-option'));
   const uploadSubmitButton = document.getElementById('upload-submit');
   const logsToggle = document.getElementById('logs-toggle');
   const logsPanel = document.getElementById('logs-panel');
@@ -80,10 +101,28 @@
   const executionProgressCopy = document.getElementById('execution-progress-copy');
   const executionProgressFill = document.getElementById('execution-progress-fill');
   const executionProgressStats = document.getElementById('execution-progress-stats');
+  const executionCollapseButton = document.getElementById('execution-collapse-button');
   const executionRefreshButton = document.getElementById('execution-refresh-button');
   const executionAbortButton = document.getElementById('execution-abort-button');
+  const executionProgressPill = document.getElementById('execution-progress-pill');
+  const executionProgressPillLabel = document.getElementById('execution-progress-pill-label');
   const toastRegion = document.getElementById('toast-region');
   const stepItems = Array.from(document.querySelectorAll('.stepper-item'));
+  const executionBarStorageKey = `campaign:${campaignId}:execution-bar-collapsed`;
+  const SPEED_PRESETS = {
+    conservative: {
+      send_delay_min_seconds: 5,
+      send_delay_max_seconds: 10,
+      batch_pause_min_seconds: 5,
+      batch_pause_max_seconds: 10,
+    },
+    aggressive: {
+      send_delay_min_seconds: 3,
+      send_delay_max_seconds: 8,
+      batch_pause_min_seconds: 5,
+      batch_pause_max_seconds: 10,
+    },
+  };
 
   let confirmHandler = null;
   let bridgeState = null;
@@ -99,6 +138,23 @@
     started_at: null,
     finished_at: null,
     updated_at: null,
+    sent_today: 0,
+    daily_limit: 0,
+    pause_reason: null,
+    speed_profile: 'conservative',
+    send_delay_min_seconds: 5,
+    send_delay_max_seconds: 10,
+    batch_pause_min_seconds: 5,
+    batch_pause_max_seconds: 10,
+    runtime_profile: {
+      selected_profile: 'conservative',
+      effective_profile: 'conservative',
+      profile_source: 'preset',
+    },
+    service_health: {
+      services: {},
+      latest_alert: null,
+    },
   };
   let currentPrimaryAction = null;
   let activeLoads = new Map();
@@ -108,6 +164,31 @@
   };
   let overviewFailureReason = null;
   let overviewFailureWarned = false;
+  let overviewFailureCount = 0;
+  let suppressOverviewWarnUntil = 0;
+  let actionStatusOverride = '';
+  let lastServiceAlertId = null;
+  let executionBarCollapsed = window.localStorage.getItem(executionBarStorageKey) === 'true';
+  const operationalProcessingCopy = {
+    deleteCampaign: 'Processando exclusao da campanha...',
+    restart: 'Processando reabertura da campanha...',
+    testRun: 'Processando inicio de teste...',
+    start: 'Processando inicio da campanha...',
+    pause: 'Processando pausa da campanha...',
+    resume: 'Processando retomada da campanha...',
+    cancel: 'Processando cancelamento da campanha...',
+    dryRun: 'Processando simulacao da campanha...',
+    saveTemplate: 'Processando salvamento da mensagem da campanha...',
+    saveSettings: 'Processando salvamento das configuracoes operacionais...',
+    uploadCsv: 'Processando importacao do arquivo CSV...',
+    addManualContact: 'Processando cadastro manual do contato...',
+    deleteContact: 'Processando exclusao do contato...',
+    deleteImportedContacts: 'Processando limpeza da base importada...',
+  };
+
+  function redirectToLogin() {
+    window.location.assign('/login');
+  }
 
   const actionLabels = {
     dryRun: 'Simular campanha',
@@ -155,10 +236,23 @@
 
   function humanBridgeState(session) {
     if (!session) return { label: 'Verificando WhatsApp', tone: 'muted' };
+    const lastError = String(session.lastError || '').toLowerCase();
+    if (session.connected && lastError.includes('detached frame')) {
+      return { label: 'WhatsApp instavel', tone: 'warn' };
+    }
     if (session.connected) return { label: 'WhatsApp conectado', tone: 'success' };
     if (session.state === 'initialize_failed') return { label: 'WhatsApp com falha', tone: 'error' };
     if (session.hasQr || session.state === 'qr_ready') return { label: 'WhatsApp aguardando QR', tone: 'warn' };
     return { label: 'WhatsApp desconectado', tone: 'muted' };
+  }
+
+  function humanServiceState(service) {
+    const state = String(service?.state || 'unknown').toLowerCase();
+    if (state === 'operational') return { label: 'Operacional', tone: 'success' };
+    if (state === 'recovering') return { label: 'Em recuperacao', tone: 'warn' };
+    if (state === 'degraded') return { label: 'Instavel', tone: 'warn' };
+    if (state === 'down') return { label: 'Fora do ar', tone: 'error' };
+    return { label: 'Verificando', tone: 'muted' };
   }
 
   function showToast(type, message) {
@@ -167,6 +261,17 @@
     item.innerHTML = `<div><p class="font-semibold text-slate-900">${message}</p></div>`;
     toastRegion?.appendChild(item);
     window.setTimeout(() => item.remove(), 3600);
+  }
+
+  function setActionStatusOverride(copy) {
+    actionStatusOverride = String(copy || '').trim();
+    renderUi();
+  }
+
+  function clearActionStatusOverride() {
+    if (!actionStatusOverride) return;
+    actionStatusOverride = '';
+    renderUi();
   }
 
   function setStatusFilterSelection(value) {
@@ -205,7 +310,11 @@
 
     statusFilterOptions.forEach((option) => {
       option.addEventListener('click', () => {
-        setStatusFilterSelection(option.dataset.value || '');
+        const selectedValue = option.dataset.value || '';
+        setStatusFilterSelection(selectedValue);
+        contactsFilter = selectedValue;
+        contactsPage = 1;
+        pollContacts();
         closeStatusFilterMenu();
       });
     });
@@ -232,6 +341,44 @@
     const view = humanBridgeState(session);
     bridgeBadge.className = `status-badge status-badge--${view.tone}`;
     bridgeBadge.textContent = view.label;
+  }
+
+  function renderServiceHealth(serviceHealth) {
+    const services = serviceHealth?.services || {};
+    const worker = services.worker || {};
+    const bridge = services.bridge || {};
+    const workerView = humanServiceState(worker);
+    const bridgeView = humanServiceState(bridge);
+
+    if (workerServiceBadge) {
+      workerServiceBadge.className = `status-badge status-badge--${workerView.tone}`;
+      workerServiceBadge.textContent = workerView.label;
+    }
+    if (workerServiceCopy) {
+      workerServiceCopy.textContent = String(worker.message || 'Sem leitura recente do motor de envio.');
+    }
+    if (bridgeServiceBadge) {
+      bridgeServiceBadge.className = `status-badge status-badge--${bridgeView.tone}`;
+      bridgeServiceBadge.textContent = bridgeView.label;
+    }
+    if (bridgeServiceCopy) {
+      bridgeServiceCopy.textContent = String(bridge.message || 'Sem leitura recente do servico de WhatsApp.');
+    }
+
+    const latestAlert = serviceHealth?.latest_alert || null;
+    if (serviceAlertPanel) {
+      serviceAlertPanel.classList.toggle('hidden', !latestAlert);
+    }
+    if (serviceAlertTitle) {
+      serviceAlertTitle.textContent = latestAlert?.title || 'Monitor operacional';
+    }
+    if (serviceAlertMessage) {
+      serviceAlertMessage.textContent = latestAlert?.message || 'Nenhum alerta operacional ativo.';
+    }
+    if (latestAlert?.id && latestAlert.id !== lastServiceAlertId) {
+      lastServiceAlertId = latestAlert.id;
+      showToast(latestAlert.tone || 'warn', latestAlert.message || latestAlert.title || 'Alerta operacional');
+    }
   }
 
   function formatRelativeTime(value) {
@@ -265,6 +412,86 @@
     }
   }
 
+  function compactSpeedLabel(value) {
+    const text = String(value || '--').trim();
+    if (!text) return '--';
+    const lowered = text.toLowerCase();
+    if (lowered.includes('aquecendo') || lowered.includes('medicao inicial')) return 'Medindo';
+    return text.replace(' contato/min', ' cont./min').replace(' contatos/min', ' cont./min');
+  }
+
+  function compactConfiguredPace(value) {
+    const text = String(value || '').trim();
+    if (!text || text === 'Config.: --') return 'Config. indisponivel';
+    return text
+      .replace('Config.: ', 'Config. ')
+      .replace(' por envio + pausas operacionais', ' + pausas')
+      .replace(' por envio', '')
+      .trim();
+  }
+
+  function titleCaseProfile(value) {
+    const profile = String(value || '').trim().toLowerCase();
+    if (profile === 'aggressive') return 'Agressivo';
+    if (profile === 'custom') return 'Customizado';
+    return 'Conservador';
+  }
+
+  function resolveSettingsProfile() {
+    if (!settingsForm) return 'conservative';
+    const min = Number(settingsForm.querySelector('input[name="send_delay_min_seconds"]')?.value || 0);
+    const max = Number(settingsForm.querySelector('input[name="send_delay_max_seconds"]')?.value || 0);
+    const pauseMin = Number(settingsForm.querySelector('input[name="batch_pause_min_seconds"]')?.value || 0);
+    const pauseMax = Number(settingsForm.querySelector('input[name="batch_pause_max_seconds"]')?.value || 0);
+    const values = {
+      send_delay_min_seconds: min,
+      send_delay_max_seconds: max,
+      batch_pause_min_seconds: pauseMin,
+      batch_pause_max_seconds: pauseMax,
+    };
+    if (Object.keys(SPEED_PRESETS.conservative).every((key) => Number(values[key]) === SPEED_PRESETS.conservative[key])) return 'conservative';
+    if (Object.keys(SPEED_PRESETS.aggressive).every((key) => Number(values[key]) === SPEED_PRESETS.aggressive[key])) return 'aggressive';
+    return 'custom';
+  }
+
+  function updateSpeedProfileUi(profile) {
+    const normalized = profile === 'aggressive' || profile === 'custom' ? profile : 'conservative';
+    const hiddenInput = settingsForm?.querySelector('input[name="speed_profile"]');
+    if (hiddenInput) hiddenInput.value = normalized;
+    speedProfileOptions.forEach((option) => {
+      const active = option.dataset.speedProfile === normalized;
+      option.dataset.active = active ? 'true' : 'false';
+      option.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    if (speedProfileBadge) {
+      speedProfileBadge.textContent = titleCaseProfile(normalized);
+      speedProfileBadge.className = `status-badge ${
+        normalized === 'aggressive' ? 'status-badge--info' : normalized === 'custom' ? 'status-badge--warn' : 'status-badge--success'
+      }`;
+    }
+    if (speedProfileDescription) {
+      speedProfileDescription.textContent =
+        normalized === 'aggressive'
+          ? 'Agressivo: aumenta throughput com risco maior de retries e limitacoes.'
+          : normalized === 'custom'
+            ? 'Customizado: voce saiu dos presets padrao e esta usando numeros manuais.'
+            : 'Conservador: prioriza estabilidade e previsibilidade.';
+    }
+  }
+
+  function applyPresetToSettings(profile) {
+    if (!settingsForm || !SPEED_PRESETS[profile]) return;
+    Object.entries(SPEED_PRESETS[profile]).forEach(([name, value]) => {
+      const input = settingsForm.querySelector(`input[name="${name}"]`);
+      if (input) input.value = String(value);
+    });
+    updateSpeedProfileUi(profile);
+  }
+
+  function syncSettingsProfileFromInputs() {
+    updateSpeedProfileUi(resolveSettingsProfile());
+  }
+
   function syncContactsUrl() {
     const url = new URL(window.location.href);
     url.searchParams.set('page', String(contactsPage));
@@ -287,8 +514,12 @@
     const totalProcessable = cycleTotal > 0 ? cycleTotal : isReopenedQueue ? pending : Number(currentStats.valid || 0);
     const completed = cycleTotal > 0 ? cycleSent + cycleFailed : isReopenedQueue ? 0 : sent + failed;
     const pct = totalProcessable > 0 ? Math.min(100, Math.round((completed / totalProcessable) * 100)) : 0;
-    const etaSeconds = pending > 0 ? pending * 7 : 0;
-    const speed = currentStats.status === 'running' ? '~1 contato / 7s' : '--';
+    const performance = currentStats.performance || {};
+    const estimates = currentStats.estimates || {};
+    const etaSeconds = Number(estimates.remaining_seconds_observed || 0);
+    const speed =
+      estimates.label_speed
+      || (performance.warming_up ? 'Aquecendo medicao' : '--');
     return {
       totalProcessable,
       sent,
@@ -303,7 +534,48 @@
       cyclePending,
       cycleTotal,
       isReopenedQueue,
+      performance,
+      estimates,
     };
+  }
+
+  function applyExecutionBarOffset(value) {
+    document.documentElement.style.setProperty('--execution-bar-offset', `${value}px`);
+  }
+
+  function syncExecutionBarLayout() {
+    const visible = executionProgressBar && !executionProgressBar.classList.contains('hidden');
+    if (!visible) {
+      applyExecutionBarOffset(0);
+      executionProgressBar?.classList.remove('is-collapsed');
+      executionProgressPill?.classList.add('hidden');
+      return;
+    }
+
+    if (executionBarCollapsed) {
+      executionProgressBar?.classList.add('is-collapsed');
+      executionProgressPill?.classList.remove('hidden');
+      executionCollapseButton?.setAttribute('aria-expanded', 'false');
+      executionProgressPill?.setAttribute('aria-expanded', 'false');
+      applyExecutionBarOffset(24);
+      return;
+    }
+
+    executionProgressBar?.classList.remove('is-collapsed');
+    executionProgressPill?.classList.add('hidden');
+    executionCollapseButton?.setAttribute('aria-expanded', 'true');
+    executionProgressPill?.setAttribute('aria-expanded', 'true');
+    const height = executionProgressBar?.offsetHeight || 0;
+    applyExecutionBarOffset(height + 24);
+  }
+
+  function setExecutionBarCollapsed(nextValue) {
+    executionBarCollapsed = Boolean(nextValue);
+    window.localStorage.setItem(executionBarStorageKey, executionBarCollapsed ? 'true' : 'false');
+    if (executionCollapseButton) {
+      executionCollapseButton.textContent = executionBarCollapsed ? 'Expandir' : 'Minimizar';
+    }
+    syncExecutionBarLayout();
   }
 
   function deriveFallbackResultsFromStats(currentStats) {
@@ -369,6 +641,7 @@
     if (currentStats.status === 'completed') return 'completed';
     if (currentStats.status === 'cancelled') return 'cancelled';
     if (currentStats.status === 'running') return 'running';
+    if (currentStats.status === 'paused' && ['bridge_recovering', 'worker_recovering'].includes(currentStats.pause_reason)) return 'recovering';
     if (currentStats.status === 'paused') return 'paused';
     if (currentStats.status === 'ready' && isTestRequired && !currentStats.test_completed_at && Number(currentStats.sent || 0) === 0) {
       return 'ready-awaiting-test';
@@ -392,8 +665,24 @@
       }
       return 'Validacao concluida. Voce pode iniciar a campanha com seguranca.';
     }
-    if (uiState === 'running') return 'Enviando mensagens...';
-    if (uiState === 'paused') return 'Campanha pausada. Nenhuma mensagem sera enviada ate a retomada.';
+    if (uiState === 'running') {
+      const lastError = String(session?.lastError || '').toLowerCase();
+      if (lastError.includes('detached frame')) {
+        return 'Envio em risco: a sessao do WhatsApp respondeu com falha interna e pode exigir reinicio da conexao.';
+      }
+      return 'Enviando mensagens...';
+    }
+    if (uiState === 'recovering') {
+      if (currentStats.pause_reason === 'worker_recovering') {
+        return 'Motor de envio em recuperacao automatica. A campanha foi pausada com seguranca e retoma sozinha quando o servico estabilizar.';
+      }
+      return 'Sessao do WhatsApp em recuperacao automatica. O envio retoma sozinho quando o bridge voltar a ficar saudavel.';
+    }
+    if (uiState === 'paused') {
+      if (currentStats.pause_reason === 'daily_limit_reached') return 'Campanha pausada: limite diario atingido. Retome manualmente no proximo dia.';
+      if (currentStats.pause_reason === 'consecutive_failures') return 'Campanha pausada: 5 falhas consecutivas detectadas. Revise a operacao antes de retomar.';
+      return 'Campanha pausada. Nenhuma mensagem sera enviada ate a retomada.';
+    }
     if (uiState === 'completed') {
       return Number(currentStats.failed || 0) > 0
         ? 'Campanha finalizada. Algumas mensagens nao foram entregues.'
@@ -412,6 +701,7 @@
       return { key: 'start', label: actionLabels.start, description: 'Com a amostra aprovada, o sistema libera o envio real.' };
     }
     if (uiState === 'running') return { key: 'pause', label: actionLabels.pause, description: 'Pause o envio se precisar interromper a operacao.' };
+    if (uiState === 'recovering') return { key: 'refresh', label: actionLabels.refresh, description: 'O sistema esta tentando recuperar a sessao automaticamente.' };
     if (uiState === 'paused') return { key: 'resume', label: actionLabels.resume, description: 'Retome o envio do ponto em que a campanha parou.' };
     if (uiState === 'completed') return { key: 'viewResults', label: actionLabels.viewResults, description: 'Revise o resultado e exporte falhas se necessario.' };
     if (uiState === 'cancelled') return { key: 'restart', label: actionLabels.restart, description: 'Recrie a fila para uma nova execucao segura.' };
@@ -425,6 +715,10 @@
     if (uiState === 'running') {
       items.push({ key: 'refresh', label: actionLabels.refresh });
       items.push({ key: 'showLogs', label: actionLabels.showLogs });
+    }
+    if (uiState === 'recovering') {
+      items.push({ key: 'showLogs', label: actionLabels.showLogs });
+      if (Number(currentStats.failed || 0) > 0) items.push({ key: 'exportFailures', label: actionLabels.exportFailures, href: `/campaigns/${campaignId}/failures/export` });
     }
     if (uiState === 'paused') {
       items.push({ key: 'viewResults', label: 'Ver progresso' });
@@ -489,22 +783,50 @@
     invalidEl.textContent = String(currentStats.invalid || 0);
     progressCaption.textContent = `${metrics.pct}%`;
     progressFill.style.width = `${metrics.pct}%`;
-    etaValue.textContent = formatDuration(metrics.etaSeconds);
-    speedValue.textContent = metrics.speed;
-    resultValue.textContent =
-      currentStats.status === 'completed'
-        ? `${metrics.sent} enviados`
-        : currentStats.status === 'paused'
-          ? 'Pausa em andamento'
-          : currentStats.status === 'running'
-            ? 'Envio ativo'
-            : 'Aguardando';
+    if (metrics.performance?.warming_up) {
+      etaValue.textContent = 'Estimando';
+      speedValue.textContent = 'Medindo';
+    } else {
+      etaValue.textContent = formatDuration(metrics.etaSeconds);
+      speedValue.textContent = compactSpeedLabel(metrics.speed);
+    }
+    if (etaNote) {
+      etaNote.textContent = metrics.performance?.warming_up
+        ? 'ETA real apos 3 envios.'
+        : 'Atualiza a cada 10s.';
+    }
+    if (speedNote) {
+      speedNote.textContent = compactConfiguredPace(metrics.estimates?.label_configured_pace);
+    }
+    const progressState = deriveCampaignUiState(currentStats, bridgeState);
+    if (progressState === 'completed') {
+      resultValue.textContent = 'Concluido';
+      if (resultNote) resultNote.textContent = `${metrics.sent} enviados`;
+    } else if (progressState === 'recovering') {
+      resultValue.textContent = 'Recuperando';
+      if (resultNote) resultNote.textContent = 'Sessao em reparo automatico.';
+    } else if (progressState === 'paused') {
+      resultValue.textContent = 'Pausado';
+      if (resultNote) resultNote.textContent = 'Fila preservada.';
+    } else if (progressState === 'running') {
+      resultValue.textContent = 'Ativo';
+      if (resultNote) resultNote.textContent = 'Envio em andamento.';
+    } else {
+      resultValue.textContent = 'Aguardando';
+      if (resultNote) resultNote.textContent = 'Sem envio em andamento.';
+    }
     contactsReadyCopy.textContent =
       metrics.pending > 0
         ? `${metrics.pending} contato${metrics.pending > 1 ? 's' : ''} pronto${metrics.pending > 1 ? 's' : ''} para envio`
         : currentStats.total > 0
           ? 'Base carregada e sem fila pendente'
           : 'Aguardando importacao';
+    if (dailyLimitSummary) {
+      dailyLimitSummary.textContent =
+        Number(currentStats.daily_limit || 0) > 0
+          ? `Hoje: ${currentStats.sent_today || 0} / ${currentStats.daily_limit} envios`
+          : `Hoje: ${currentStats.sent_today || 0} envios (sem limite diario)`;
+    }
 
     if (currentStats.status === 'running') {
       const currentIndex =
@@ -513,6 +835,8 @@
           : Math.min(metrics.completed + 1, Math.max(metrics.totalProcessable, 1));
       const currentTotal = metrics.cycleTotal > 0 ? metrics.cycleTotal : Math.max(metrics.totalProcessable, 1);
       progressSummary.textContent = `Enviando mensagem ${currentIndex} de ${currentTotal}.`;
+    } else if (progressState === 'recovering') {
+      progressSummary.textContent = 'Recuperando a sessao do WhatsApp para retomar a fila automaticamente.';
     } else if (currentStats.status === 'completed') {
       progressSummary.textContent = `Resultado final: ${metrics.sent} enviados e ${metrics.failed} falhas.`;
     } else if (metrics.isReopenedQueue) {
@@ -525,22 +849,41 @@
   function renderExecutionBar(currentStats) {
     if (!executionProgressBar) return;
     const uiState = deriveCampaignUiState(currentStats, bridgeState);
-    const visible = uiState === 'running' || uiState === 'paused';
+    const visible = uiState === 'running' || uiState === 'paused' || uiState === 'recovering';
     executionProgressBar.classList.toggle('hidden', !visible);
-    if (!visible) return;
+    if (!visible) {
+      syncExecutionBarLayout();
+      return;
+    }
 
     const metrics = getProgressMetrics(currentStats);
     const done = metrics.cycleTotal > 0 ? metrics.cycleSent + metrics.cycleFailed : metrics.completed;
     const total = metrics.cycleTotal > 0 ? metrics.cycleTotal : Math.max(metrics.totalProcessable, 0);
     const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
 
-    executionProgressTitle.textContent = uiState === 'paused' ? 'Envio pausado' : 'Envio em andamento';
+    executionProgressTitle.textContent =
+      uiState === 'recovering'
+        ? currentStats.pause_reason === 'worker_recovering'
+          ? 'Recuperando motor'
+          : 'Recuperando sessao'
+        : uiState === 'paused'
+        ? 'Envio pausado'
+        : 'Envio em andamento';
     executionProgressCopy.textContent =
-      uiState === 'paused'
+      uiState === 'recovering'
+        ? currentStats.pause_reason === 'worker_recovering'
+          ? 'O sistema esta recuperando o motor de envio e volta a processar a fila automaticamente quando ele estabilizar.'
+          : 'O sistema reinicia a sessao do WhatsApp e volta a enviar automaticamente quando ela estabilizar.'
+        : uiState === 'paused'
         ? 'A fila permanece preservada. Os envios continuam apenas quando voce retomar.'
         : 'Os envios continuam mesmo se voce sair desta pagina. Use Abortar apenas para interromper a campanha.';
     executionProgressFill.style.width = `${pct}%`;
     executionProgressStats.textContent = `${done} de ${total} processados. ${metrics.pending} restante${metrics.pending === 1 ? '' : 's'}.`;
+    if (executionProgressPillLabel) {
+      executionProgressPillLabel.textContent =
+        uiState === 'recovering' ? 'Recuperando sessao' : uiState === 'paused' ? 'Envio pausado' : 'Envio em andamento';
+    }
+    syncExecutionBarLayout();
   }
 
   function renderUploadSummary(currentStats) {
@@ -615,7 +958,11 @@
         (item) => `
           <article class="incident-card incident-card--${escapeHtml(item.tone || 'error')}">
             <div class="flex items-center justify-between gap-3">
-              <p class="text-sm font-semibold text-ink">${escapeHtml(item.label)}</p>
+              <div>
+                <p class="text-sm font-semibold text-ink">${escapeHtml(item.human_title || item.label)}</p>
+                <p class="mt-1 text-sm leading-6 text-slate-600">${escapeHtml(item.human_summary || item.label || '-')}</p>
+                <p class="mt-2 text-sm font-medium text-slate-500">${escapeHtml(item.recommended_action || 'Revise os detalhes tecnicos para decidir o proximo passo.')}</p>
+              </div>
               <span class="rounded-full bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">${escapeHtml(item.count)} ocorrencia${Number(item.count) > 1 ? 's' : ''}</span>
             </div>
           </article>
@@ -671,8 +1018,9 @@
               <article class="incident-card incident-card--${escapeHtml(item.tone || 'info')}">
                 <div class="flex items-start justify-between gap-3">
                   <div>
-                    <p class="text-sm font-semibold text-ink">${escapeHtml(item.title)}</p>
-                    <p class="mt-1 text-sm leading-6 text-slate-600">${escapeHtml(item.summary)}</p>
+                    <p class="text-sm font-semibold text-ink">${escapeHtml(item.human_title || item.title)}</p>
+                    <p class="mt-1 text-sm leading-6 text-slate-600">${escapeHtml(item.human_summary || item.summary)}</p>
+                    <p class="mt-2 text-sm font-medium text-slate-500">${escapeHtml(item.recommended_action || 'Revise os detalhes tecnicos para diagnosticar este incidente.')}</p>
                   </div>
                   <div class="text-right">
                     <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">${escapeHtml(item.count)}x</p>
@@ -682,6 +1030,7 @@
                 <details class="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3">
                   <summary class="cursor-pointer text-sm font-semibold text-slate-700">Ver detalhes tecnicos</summary>
                   <div class="mt-3 grid gap-2 text-sm text-slate-500">
+                    <p>Resumo tecnico: ${escapeHtml(item.technical_summary || 'Sem detalhe tecnico adicional.')}</p>
                     <p>Classe de erro: ${escapeHtml(item.error_class || '-')}</p>
                     <p>Status HTTP: ${escapeHtml(item.http_status || '-')}</p>
                   </div>
@@ -732,6 +1081,10 @@
   async function fetchBridgeState() {
     try {
       const response = await fetch('/bridge/session');
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
       const data = await response.json();
       if (response.ok && data.ok) {
         bridgeState = data.session;
@@ -825,18 +1178,52 @@
 
   async function deleteContactFromCampaign(contactId, button) {
     setButtonLoading(button, 'Removendo...', true);
+    setActionStatusOverride(operationalProcessingCopy.deleteContact);
     try {
       const response = await fetch(`/campaigns/${campaignId}/contacts/${contactId}/delete`, { method: 'POST' });
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) {
         throw new Error(data.message || data.detail || 'Nao foi possivel remover o contato.');
       }
-      showToast('success', 'Contato removido da campanha.');
+      showToast('success', data.message || 'Contato removido da campanha.');
+      clearActionStatusOverride();
       await pollAll();
     } catch (error) {
+      clearActionStatusOverride();
       showToast('error', String(error.message || error));
     } finally {
+      clearActionStatusOverride();
       setButtonLoading(button, 'Removendo...', false);
+    }
+  }
+
+  async function deleteImportedContacts(button) {
+    setButtonLoading(button, 'Limpando...', true);
+    setActionStatusOverride(operationalProcessingCopy.deleteImportedContacts);
+    try {
+      const response = await fetch(`/campaigns/${campaignId}/contacts/delete-imported`, { method: 'POST' });
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.message || data.detail || 'Nao foi possivel limpar a base importada.');
+      }
+      contactsPage = 1;
+      showToast('success', data.message || 'Base importada removida com sucesso.');
+      clearActionStatusOverride();
+      await pollAll();
+    } catch (error) {
+      clearActionStatusOverride();
+      showToast('error', String(error.message || error));
+    } finally {
+      clearActionStatusOverride();
+      setButtonLoading(button, 'Limpando...', false);
     }
   }
 
@@ -844,7 +1231,8 @@
     const uiState = deriveCampaignUiState(stats, bridgeState);
     setStatusBadge(stats.status);
     setBridgeBadge(bridgeState);
-    statusNarrative.textContent = getNarrativeStatus(uiState, stats, bridgeState);
+    renderServiceHealth(stats.service_health || {});
+    statusNarrative.textContent = actionStatusOverride || getNarrativeStatus(uiState, stats, bridgeState);
     lastUpdated.textContent = formatRelativeTime(stats.updated_at);
     renderStepper(uiState, stats, bridgeState);
     renderProgress(stats);
@@ -855,11 +1243,53 @@
     renderResults(stats, safeResults);
     renderActivity(safeActivity);
     updatePrimaryButtons(uiState, stats);
+    if (clearImportedContactsButton) {
+      const canDeleteImportedContacts = ['draft', 'ready', 'paused'].includes(String(stats.status || '').toLowerCase()) && Number(stats.total || 0) > 0;
+      clearImportedContactsButton.classList.toggle('hidden', !canDeleteImportedContacts);
+      clearImportedContactsButton.disabled = !canDeleteImportedContacts;
+    }
+    if (deleteCampaignButton) {
+      const canDeleteCampaign = String(stats.status || '').toLowerCase() !== 'running';
+      deleteCampaignButton.classList.toggle('hidden', !canDeleteCampaign);
+      deleteCampaignButton.disabled = !canDeleteCampaign;
+    }
+    if (settingsForm) {
+      const minInput = settingsForm.querySelector('input[name="send_delay_min_seconds"]');
+      const maxInput = settingsForm.querySelector('input[name="send_delay_max_seconds"]');
+      const batchPauseMinInput = settingsForm.querySelector('input[name="batch_pause_min_seconds"]');
+      const batchPauseMaxInput = settingsForm.querySelector('input[name="batch_pause_max_seconds"]');
+      const dailyInput = settingsForm.querySelector('input[name="daily_limit"]');
+      if (minInput) minInput.value = String(stats.send_delay_min_seconds ?? 15);
+      if (maxInput) maxInput.value = String(stats.send_delay_max_seconds ?? 45);
+      if (batchPauseMinInput) batchPauseMinInput.value = String(stats.batch_pause_min_seconds ?? 25);
+      if (batchPauseMaxInput) batchPauseMaxInput.value = String(stats.batch_pause_max_seconds ?? 40);
+      if (dailyInput) dailyInput.value = String(stats.daily_limit ?? 0);
+      updateSpeedProfileUi(stats.speed_profile || stats.runtime_profile?.selected_profile || 'conservative');
+    }
+    if (runtimeProfileBadge) {
+      const runtimeProfile = stats.runtime_profile || {};
+      const effective = runtimeProfile.effective_profile || stats.speed_profile || 'conservative';
+      runtimeProfileBadge.textContent = `Perfil ${titleCaseProfile(effective).toLowerCase()}`;
+      runtimeProfileBadge.className = `status-badge ${
+        effective === 'aggressive' ? 'status-badge--info' : effective === 'custom' ? 'status-badge--warn' : 'status-badge--success'
+      }`;
+    }
+    if (runtimeProfileCopy) {
+      const runtimeProfile = stats.runtime_profile || {};
+      runtimeProfileCopy.textContent =
+        runtimeProfile.profile_source === 'manual_override'
+          ? 'Fonte: ajuste manual'
+          : `Fonte: ${titleCaseProfile(runtimeProfile.selected_profile || stats.speed_profile || 'conservative')}`;
+    }
   }
 
   async function fetchOverview() {
     try {
       const response = await fetch(`/campaigns/${campaignId}/overview`);
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
       if (!response.ok) {
         overview = { results: null, activity: null };
         overviewFailureReason = response.status === 404 ? 'not_found' : 'http_error';
@@ -880,6 +1310,10 @@
       params.set('per_page', String(contactsPerPage));
       if (contactsFilter) params.set('status', contactsFilter);
       const response = await fetch(`/campaigns/${campaignId}/contacts?${params.toString()}`);
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
       if (!response.ok) return;
       const data = await response.json();
       renderContactsTable(data);
@@ -892,21 +1326,32 @@
     pollingLabel.textContent = 'Atualizando dados...';
     await fetchBridgeState();
     try {
+      const previousStatus = stats.status;
       const [statsResponse] = await Promise.all([
         fetch(`/campaigns/${campaignId}/stats`),
         fetchOverview(),
       ]);
+      if (statsResponse.status === 401) {
+        redirectToLogin();
+        return;
+      }
       if (!statsResponse.ok) throw new Error('Falha ao consultar stats');
       stats = await statsResponse.json();
+      if (!stats.service_health) {
+        stats.service_health = { services: {}, latest_alert: null };
+      }
+      const statusChanged = Boolean(previousStatus && previousStatus !== stats.status);
+      if (statusChanged) {
+        overviewFailureCount = 0;
+        overviewFailureWarned = false;
+        suppressOverviewWarnUntil = Math.max(suppressOverviewWarnUntil, Date.now() + 12000);
+      }
       renderUi();
       await pollContacts();
-      if (overviewFailureReason && !overviewFailureWarned) {
-        const message =
-          overviewFailureReason === 'not_found'
-            ? 'Visao detalhada indisponivel no backend atual. Reinicie o servidor da aplicacao.'
-            : 'Falha temporaria ao carregar resultados e atividade detalhados.';
-        showToast('warn', message);
-        overviewFailureWarned = true;
+      if (overviewFailureReason) {
+        overviewFailureCount += 1;
+      } else {
+        overviewFailureCount = 0;
       }
       if (!overviewFailureReason) overviewFailureWarned = false;
     } catch (_) {
@@ -917,6 +1362,7 @@
   }
 
   async function runCampaignAction(actionKey, button) {
+    const restartMode = stats.status === 'completed' || stats.status === 'cancelled' ? 'all' : 'failed';
     const configs = {
       dryRun: { url: `/campaigns/${campaignId}/dry-run`, method: 'POST', loading: 'Simulando...', success: 'Simulacao concluida.' },
       testRun: { url: `/campaigns/${campaignId}/test-run`, method: 'POST', loading: 'Enviando teste...', success: 'Amostra enviada para confirmacao.' },
@@ -924,7 +1370,14 @@
       pause: { url: `/campaigns/${campaignId}/pause`, method: 'POST', loading: 'Pausando...', success: 'Campanha pausada.' },
       resume: { url: `/campaigns/${campaignId}/resume`, method: 'POST', loading: 'Retomando...', success: 'Campanha retomada.' },
       cancel: { url: `/campaigns/${campaignId}/cancel`, method: 'POST', loading: 'Cancelando...', success: 'Campanha cancelada.' },
-      restart: { url: `/campaigns/${campaignId}/restart`, method: 'POST', body: new URLSearchParams({ mode: 'failed' }), loading: 'Reiniciando...', success: 'Fila recriada para uma nova tentativa.' },
+      deleteCampaign: { url: `/campaigns/${campaignId}/delete`, method: 'POST', loading: 'Excluindo...', success: 'Campanha excluida com sucesso.' },
+      restart: {
+        url: `/campaigns/${campaignId}/restart`,
+        method: 'POST',
+        body: new URLSearchParams({ mode: restartMode }),
+        loading: 'Reiniciando...',
+        success: restartMode === 'all' ? 'Fila recriada para reenviar toda a campanha.' : 'Fila recriada para uma nova tentativa.',
+      },
     };
 
     if (actionKey === 'viewResults') {
@@ -947,6 +1400,10 @@
 
     const config = configs[actionKey];
     if (!config) return;
+    setActionStatusOverride(operationalProcessingCopy[actionKey] || '');
+    if (['restart', 'testRun', 'start', 'resume'].includes(actionKey)) {
+      suppressOverviewWarnUntil = Date.now() + 12000;
+    }
 
     setButtonLoading(button, config.loading, true);
     try {
@@ -955,16 +1412,32 @@
         body: config.body,
         headers: config.body instanceof URLSearchParams ? { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' } : undefined,
       });
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) {
         throw new Error(data.message || 'Falha na acao');
       }
-      showToast('success', config.success);
+      showToast('success', data.message || config.success);
+      if (actionKey === 'deleteCampaign') {
+        window.setTimeout(() => window.location.assign(data.redirect_url || '/'), 120);
+        return;
+      }
+      clearActionStatusOverride();
       await pollAll();
     } catch (error) {
+      clearActionStatusOverride();
       showToast('error', String(error.message || error));
     } finally {
-      setButtonLoading(button, config.loading, false);
+      clearActionStatusOverride();
+      if (button === primaryButton && currentPrimaryAction !== actionKey) {
+        button.disabled = false;
+        delete button.dataset.originalLabel;
+      } else {
+        setButtonLoading(button, config.loading, false);
+      }
     }
   }
 
@@ -972,35 +1445,142 @@
     event.preventDefault();
     const formData = new FormData(templateForm);
     setButtonLoading(saveTemplateButton, 'Salvando...', true);
+    setActionStatusOverride(operationalProcessingCopy.saveTemplate);
     try {
       const response = await fetch(templateForm.action, { method: 'POST', body: formData });
-      if (!response.ok) throw new Error('Falha ao salvar mensagem');
-      showToast('success', 'Mensagem salva.');
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok && response.redirected === false) throw new Error(data.message || 'Falha ao salvar mensagem');
+      showToast('success', data.message || 'Mensagem salva.');
+      clearActionStatusOverride();
       await pollAll();
-    } catch (_) {
-      showToast('error', 'Nao foi possivel salvar a mensagem agora.');
+    } catch (error) {
+      clearActionStatusOverride();
+      showToast('error', String(error.message || 'Nao foi possivel salvar a mensagem agora.'));
     } finally {
+      clearActionStatusOverride();
       setButtonLoading(saveTemplateButton, 'Salvando...', false);
     }
+  });
+
+  speedProfileOptions.forEach((option) => {
+    option.addEventListener('click', () => {
+      const targetProfile = option.dataset.speedProfile || 'conservative';
+      const applySelection = async () => {
+        applyPresetToSettings(targetProfile);
+        if (String(stats.status || '').toLowerCase() === 'running') {
+          await submitSettingsForm();
+          return;
+        }
+        showToast('success', `Modo ${titleCaseProfile(targetProfile).toLowerCase()} preparado para salvar.`);
+      };
+      if (String(stats.status || '').toLowerCase() === 'running') {
+        openConfirm({
+          title: 'Aplicar novo modo de velocidade',
+          message: 'Essa mudanca afeta os proximos envios da campanha em andamento. Deseja aplicar agora?',
+          submitLabel: 'Aplicar modo',
+          onConfirm: async () => {
+            confirmModal?.close();
+            await applySelection();
+          },
+        });
+        return;
+      }
+      void applySelection();
+    });
+  });
+
+  settingsForm
+    ?.querySelectorAll('input[name="send_delay_min_seconds"], input[name="send_delay_max_seconds"], input[name="batch_pause_min_seconds"], input[name="batch_pause_max_seconds"]')
+    .forEach((input) => {
+      input.addEventListener('input', () => {
+        syncSettingsProfileFromInputs();
+      });
+    });
+
+  async function submitSettingsForm() {
+    if (!settingsForm) return;
+    const formData = new FormData(settingsForm);
+    const selectedProfile = resolveSettingsProfile();
+    const payload = new URLSearchParams({
+      speed_profile: selectedProfile,
+      send_delay_min_seconds: String(formData.get('send_delay_min_seconds') || '').trim(),
+      send_delay_max_seconds: String(formData.get('send_delay_max_seconds') || '').trim(),
+      batch_pause_min_seconds: String(formData.get('batch_pause_min_seconds') || '').trim(),
+      batch_pause_max_seconds: String(formData.get('batch_pause_max_seconds') || '').trim(),
+      daily_limit: String(formData.get('daily_limit') || '').trim(),
+    });
+    setButtonLoading(saveSettingsButton, 'Salvando...', true);
+    setActionStatusOverride(operationalProcessingCopy.saveSettings);
+    try {
+      const response = await fetch(`/campaigns/${campaignId}/settings`, {
+        method: 'POST',
+        body: payload,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      });
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.message || 'Nao foi possivel salvar as configuracoes.');
+      }
+      showToast('success', data.message || 'Configuracoes operacionais salvas.');
+      clearActionStatusOverride();
+      await pollAll();
+    } catch (error) {
+      clearActionStatusOverride();
+      showToast('error', String(error.message || error));
+    } finally {
+      clearActionStatusOverride();
+      setButtonLoading(saveSettingsButton, 'Salvando...', false);
+    }
+  }
+
+  settingsForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await submitSettingsForm();
   });
 
   uploadForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const formData = new FormData(uploadForm);
     setButtonLoading(uploadSubmitButton, 'Enviando arquivo...', true);
+    setActionStatusOverride(operationalProcessingCopy.uploadCsv);
     try {
       const response = await fetch(`/campaigns/${campaignId}/contacts/upload`, { method: 'POST', body: formData });
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
       const data = await response.json();
       if (!response.ok) throw new Error('Falha no upload do CSV');
-      showToast('success', 'Upload concluido com sucesso.');
+      const replacedCopy =
+        Number(data.summary.replaced_previous_csv_contacts || 0) > 0
+          ? ` A base CSV anterior (${data.summary.replaced_previous_csv_contacts} contato${Number(data.summary.replaced_previous_csv_contacts) > 1 ? 's' : ''}) foi substituida.`
+          : '';
+      showToast('success', `Upload concluido com sucesso.${replacedCopy}`);
       uploadSummary.innerHTML = `
         <p class="text-sm font-semibold text-ink">${data.summary.valid || 0} contato${Number(data.summary.valid || 0) > 1 ? 's' : ''} pronto${Number(data.summary.valid || 0) > 1 ? 's' : ''} para envio</p>
-        <p class="mt-2 text-sm leading-6 text-slate-500">Resumo: ${data.summary.valid || 0} validos, ${data.summary.invalid || 0} invalidos e ${data.summary.inserted || 0} inseridos.</p>
+        <p class="mt-2 text-sm leading-6 text-slate-500">Resumo: ${data.summary.valid || 0} validos, ${data.summary.invalid || 0} invalidos e ${data.summary.inserted || 0} inseridos.${replacedCopy}</p>
       `;
+      if (csvFileInput) csvFileInput.value = '';
+      if (Number(data.summary.inserted || 0) > 0 || Number(data.summary.total || 0) > 0) {
+        contactsFilter = '';
+        contactsPage = 1;
+        setStatusFilterSelection('');
+      }
+      clearActionStatusOverride();
       await pollAll();
-    } catch (_) {
-      showToast('error', 'Nao foi possivel importar o CSV agora.');
+    } catch (error) {
+      clearActionStatusOverride();
+      showToast('error', String(error.message || 'Nao foi possivel importar o CSV agora.'));
     } finally {
+      clearActionStatusOverride();
       setButtonLoading(uploadSubmitButton, 'Enviando arquivo...', false);
     }
   });
@@ -1039,6 +1619,7 @@
     }
 
     setButtonLoading(manualContactSubmit, 'Salvando...', true);
+    setActionStatusOverride(operationalProcessingCopy.addManualContact);
     if (manualContactFeedback) {
       manualContactFeedback.textContent = 'Validando telefone e salvando contato...';
       manualContactFeedback.className = 'text-sm text-slate-500';
@@ -1049,6 +1630,10 @@
         body: payload,
         headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
       });
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) {
         if (response.status === 404) {
@@ -1061,15 +1646,18 @@
         manualContactFeedback.textContent = 'Cliente adicionado com sucesso.';
         manualContactFeedback.className = 'text-sm text-emerald-700';
       }
-      showToast('success', 'Cliente adicionado manualmente.');
+      showToast('success', data.message || 'Cliente adicionado manualmente.');
+      clearActionStatusOverride();
       await pollAll();
     } catch (error) {
       if (manualContactFeedback) {
         manualContactFeedback.textContent = String(error.message || 'Falha ao adicionar cliente.');
         manualContactFeedback.className = 'text-sm text-red-600';
       }
+      clearActionStatusOverride();
       showToast('error', String(error.message || error));
     } finally {
+      clearActionStatusOverride();
       setButtonLoading(manualContactSubmit, 'Salvando...', false);
     }
   });
@@ -1093,6 +1681,39 @@
       message: `O contato "${contactName}" sera removido desta campanha imediatamente.`,
       onConfirm: async () => {
         await deleteContactFromCampaign(contactId, target);
+        confirmModal?.close();
+      },
+    });
+  });
+
+  clearImportedContactsButton?.addEventListener('click', () => {
+    const allowed = ['draft', 'ready', 'paused'].includes(String(stats.status || '').toLowerCase());
+    if (!allowed) {
+      showToast('warn', 'Limpeza bloqueada durante envio ou apos finalizacao da campanha.');
+      return;
+    }
+    openConfirm({
+      title: 'Limpar base importada',
+      message: 'Todos os contatos vindos de CSV serao removidos desta campanha. Contatos adicionados manualmente serao preservados.',
+      onConfirm: async () => {
+        await deleteImportedContacts(clearImportedContactsButton);
+        confirmModal?.close();
+      },
+    });
+  });
+
+  deleteCampaignButton?.addEventListener('click', () => {
+    const allowed = String(stats.status || '').toLowerCase() !== 'running';
+    if (!allowed) {
+      showToast('warn', 'Exclusao bloqueada durante envio ativo da campanha.');
+      return;
+    }
+    openConfirm({
+      title: 'Excluir campanha',
+      message: 'A campanha, os contatos e o historico operacional serao removidos permanentemente. Esta acao nao pode ser desfeita.',
+      focusCancel: true,
+      onConfirm: async () => {
+        await runCampaignAction('deleteCampaign', deleteCampaignButton);
         confirmModal?.close();
       },
     });
@@ -1163,6 +1784,14 @@
     logsToggle.textContent = hidden ? 'Ocultar atividade tecnica' : 'Mostrar atividade tecnica';
   });
 
+  executionCollapseButton?.addEventListener('click', () => {
+    setExecutionBarCollapsed(!executionBarCollapsed);
+  });
+
+  executionProgressPill?.addEventListener('click', () => {
+    setExecutionBarCollapsed(false);
+  });
+
   executionRefreshButton?.addEventListener('click', async () => {
     await pollAll();
   });
@@ -1171,6 +1800,14 @@
     const target = event.target;
     if (!(target instanceof HTMLSelectElement)) return;
     contactsPerPage = Number(target.value || '25');
+    contactsPage = 1;
+    await pollContacts();
+  });
+
+  const contactsFiltersForm = statusFilterInput?.closest('form');
+  contactsFiltersForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    contactsFilter = String(statusFilterInput?.value || '').trim();
     contactsPage = 1;
     await pollContacts();
   });
@@ -1210,5 +1847,10 @@
   renderUi();
   bindStatusFilter();
   pollAll();
-  window.setInterval(pollAll, 5000);
+  window.addEventListener('resize', () => {
+    syncExecutionBarLayout();
+  });
+
+  setExecutionBarCollapsed(executionBarCollapsed);
+  window.setInterval(pollAll, 10000);
 })();

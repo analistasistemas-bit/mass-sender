@@ -130,6 +130,13 @@ def parse_csv_bytes(payload: bytes) -> ParsedCSV:
         )
 
     parsed = _parse_text_as_csv(text)
+    if _looks_like_wrapped_legacy_csv(text):
+        repaired = _normalize_wrapped_legacy_csv(text)
+        if repaired:
+            repaired_parsed = _parse_text_as_csv(repaired)
+            if repaired_parsed.summary.valid > parsed.summary.valid:
+                return repaired_parsed
+
     missing_headers_only = (
         parsed.summary.total > 0
         and parsed.summary.valid == 0
@@ -138,10 +145,5 @@ def parse_csv_bytes(payload: bytes) -> ParsedCSV:
 
     if parsed.summary.total > 0 and not missing_headers_only:
         return parsed
-
-    if _looks_like_wrapped_legacy_csv(text):
-        repaired = _normalize_wrapped_legacy_csv(text)
-        if repaired:
-            return _parse_text_as_csv(repaired)
 
     return parsed

@@ -22,4 +22,4 @@ def test_start_requires_test_run():
 
     ok, message = start_campaign(session, campaign.id)
     assert ok is False
-    assert 'teste' in message.lower()
+    assert 'amostra' in message.lower()

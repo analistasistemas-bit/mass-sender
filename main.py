@@ -5,14 +5,16 @@ import os
 from typing import Callable, Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
-from models import Campaign, Contact
+from models import Campaign, Contact, SendLog
 from schemas import CampaignCreate, TemplateUpdate
 from services.campaign_service import (
     add_manual_contact,
@@ -20,22 +22,27 @@ from services.campaign_service import (
     build_results_payload,
     cancel_campaign,
     create_campaign,
+    delete_campaign,
     delete_contact_from_campaign,
+    delete_imported_contacts_from_campaign,
     dry_run,
     export_failures_csv,
     get_campaign_or_404,
+    log_event,
     pause_campaign,
     refresh_campaign_counters,
     restart_campaign,
     resume_campaign,
     start_campaign,
     stats_payload,
+    update_campaign_operational_settings,
     update_template,
     upload_contacts,
 )
 from services.send_engine import SendEngine
 from services.whatsapp import WhatsAppClient, WhatsAppError
 from utils.config import load_app_env
+from utils.message_compose import render_test_run_message
 
 load_app_env()
 
@@ -48,12 +55,114 @@ templates = Jinja2Templates(directory='templates')
 engine_worker = SendEngine()
 
 
+def start_engine_worker_task() -> asyncio.Task:
+    return asyncio.create_task(engine_worker.run_forever())
+
+
+async def supervise_operational_services() -> None:
+    while True:
+        worker_task = getattr(app.state, 'worker_task', None)
+        if worker_task is None:
+            app.state.worker_task = start_engine_worker_task()
+            worker_task = app.state.worker_task
+
+        if worker_task.done():
+            failure_reason = 'Motor de envio interrompido inesperadamente. Recuperacao automatica iniciada.'
+            await engine_worker.pause_campaigns_for_worker_recovery(failure_reason)
+            try:
+                await worker_task
+            except BaseException:
+                pass
+            app.state.worker_task = start_engine_worker_task()
+            await asyncio.sleep(1)
+            await engine_worker.resume_campaigns_after_worker_recovery()
+        elif engine_worker.worker_heartbeat_stale():
+            failure_reason = 'Motor de envio sem resposta. Recuperacao automatica iniciada.'
+            await engine_worker.pause_campaigns_for_worker_recovery(failure_reason)
+            worker_task.cancel()
+            try:
+                await worker_task
+            except BaseException:
+                pass
+            app.state.worker_task = start_engine_worker_task()
+            await asyncio.sleep(1)
+            await engine_worker.resume_campaigns_after_worker_recovery()
+
+        await engine_worker.monitor_bridge_service()
+        await asyncio.sleep(5)
+
+
+def ensure_campaign_operational_columns(target_engine: Engine) -> None:
+    expected_columns = {
+        'speed_profile': "ALTER TABLE campaigns ADD COLUMN speed_profile VARCHAR(20) NOT NULL DEFAULT 'conservative'",
+        'send_delay_min_seconds': 'ALTER TABLE campaigns ADD COLUMN send_delay_min_seconds INTEGER NOT NULL DEFAULT 5',
+        'send_delay_max_seconds': 'ALTER TABLE campaigns ADD COLUMN send_delay_max_seconds INTEGER NOT NULL DEFAULT 10',
+        'batch_pause_min_seconds': 'ALTER TABLE campaigns ADD COLUMN batch_pause_min_seconds INTEGER NOT NULL DEFAULT 5',
+        'batch_pause_max_seconds': 'ALTER TABLE campaigns ADD COLUMN batch_pause_max_seconds INTEGER NOT NULL DEFAULT 10',
+        'batch_size_initial': 'ALTER TABLE campaigns ADD COLUMN batch_size_initial INTEGER NOT NULL DEFAULT 10',
+        'batch_size_max': 'ALTER TABLE campaigns ADD COLUMN batch_size_max INTEGER NOT NULL DEFAULT 25',
+        'batch_growth_step': 'ALTER TABLE campaigns ADD COLUMN batch_growth_step INTEGER NOT NULL DEFAULT 2',
+        'batch_growth_streak_required': 'ALTER TABLE campaigns ADD COLUMN batch_growth_streak_required INTEGER NOT NULL DEFAULT 3',
+        'batch_shrink_step': 'ALTER TABLE campaigns ADD COLUMN batch_shrink_step INTEGER NOT NULL DEFAULT 2',
+        'batch_shrink_error_streak_required': 'ALTER TABLE campaigns ADD COLUMN batch_shrink_error_streak_required INTEGER NOT NULL DEFAULT 2',
+        'batch_size_floor': 'ALTER TABLE campaigns ADD COLUMN batch_size_floor INTEGER NOT NULL DEFAULT 5',
+        'daily_limit': 'ALTER TABLE campaigns ADD COLUMN daily_limit INTEGER NOT NULL DEFAULT 0',
+        'sent_today': 'ALTER TABLE campaigns ADD COLUMN sent_today INTEGER NOT NULL DEFAULT 0',
+        'last_send_date': 'ALTER TABLE campaigns ADD COLUMN last_send_date DATETIME',
+        'pause_reason': 'ALTER TABLE campaigns ADD COLUMN pause_reason VARCHAR(80)',
+    }
+    with target_engine.begin() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info('campaigns')")).fetchall()}
+        for name, ddl in expected_columns.items():
+            if name not in existing:
+                conn.execute(text(ddl))
+        conn.execute(
+            text(
+                '''
+                UPDATE campaigns
+                SET speed_profile = COALESCE(speed_profile, 'conservative'),
+                    send_delay_min_seconds = COALESCE(send_delay_min_seconds, 5),
+                    send_delay_max_seconds = COALESCE(send_delay_max_seconds, 10),
+                    batch_pause_min_seconds = COALESCE(batch_pause_min_seconds, 5),
+                    batch_pause_max_seconds = COALESCE(batch_pause_max_seconds, 10),
+                    batch_size_initial = COALESCE(batch_size_initial, 10),
+                    batch_size_max = COALESCE(batch_size_max, 25),
+                    batch_growth_step = COALESCE(batch_growth_step, 2),
+                    batch_growth_streak_required = COALESCE(batch_growth_streak_required, 3),
+                    batch_shrink_step = COALESCE(batch_shrink_step, 2),
+                    batch_shrink_error_streak_required = COALESCE(batch_shrink_error_streak_required, 2),
+                    batch_size_floor = COALESCE(batch_size_floor, 5),
+                    daily_limit = COALESCE(daily_limit, 0),
+                    sent_today = COALESCE(sent_today, 0)
+                '''
+            )
+        )
+        contact_rows = conn.execute(text("PRAGMA table_info('contacts')")).fetchall()
+        if contact_rows:
+            contact_columns = {row[1] for row in contact_rows}
+            if 'source' not in contact_columns:
+                conn.execute(text("ALTER TABLE contacts ADD COLUMN source VARCHAR(20) NOT NULL DEFAULT 'csv'"))
+            conn.execute(text("UPDATE contacts SET source = COALESCE(source, 'csv')"))
+
+
 def require_auth(request: Request):
     if request.url.path.startswith('/login') or request.url.path.startswith('/health'):
         return
     token = request.cookies.get(SESSION_COOKIE)
     if token != APP_PASSWORD:
         raise HTTPException(status_code=401, detail='Não autenticado')
+
+
+def _expects_html_navigation(request: Request) -> bool:
+    accept = (request.headers.get('accept') or '').lower()
+    return request.method.upper() == 'GET' and 'text/html' in accept
+
+
+@app.exception_handler(HTTPException)
+async def custom_http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code == 401 and _expects_html_navigation(request):
+        return RedirectResponse('/login', status_code=303)
+    return await http_exception_handler(request, exc)
 
 
 def bridge_error_response(exc: WhatsAppError, operation: str) -> JSONResponse:
@@ -124,7 +233,9 @@ async def resolve_test_run_destination(client: WhatsAppClient) -> tuple[Optional
 @app.on_event('startup')
 async def startup_event() -> None:
     Base.metadata.create_all(bind=engine)
-    app.state.worker_task = asyncio.create_task(engine_worker.run_forever())
+    ensure_campaign_operational_columns(engine)
+    app.state.worker_task = start_engine_worker_task()
+    app.state.supervisor_task = asyncio.create_task(supervise_operational_services())
 
 
 @app.on_event('shutdown')
@@ -135,6 +246,13 @@ async def shutdown_event() -> None:
         task.cancel()
         try:
             await task
+        except asyncio.CancelledError:
+            pass
+    supervisor_task = getattr(app.state, 'supervisor_task', None)
+    if supervisor_task:
+        supervisor_task.cancel()
+        try:
+            await supervisor_task
         except asyncio.CancelledError:
             pass
 
@@ -234,6 +352,15 @@ def create_campaign_route(name: str = Form(...), db: Session = Depends(get_db)):
     return RedirectResponse(f'/campaigns/{item.id}', status_code=303)
 
 
+@app.post('/campaigns/{campaign_id}/delete', dependencies=[Depends(require_auth)])
+def delete_campaign_route(campaign_id: int, db: Session = Depends(get_db)):
+    result = delete_campaign(db, campaign_id)
+    payload = {**result}
+    if result.get('ok'):
+        payload['redirect_url'] = '/'
+    return JSONResponse(payload, status_code=200 if result.get('ok') else 400)
+
+
 @app.get('/campaigns/{campaign_id}', response_class=HTMLResponse, dependencies=[Depends(require_auth)])
 def campaign_page(
     campaign_id: int,
@@ -244,7 +371,13 @@ def campaign_page(
     db: Session = Depends(get_db),
 ):
     campaign = get_campaign_or_404(db, campaign_id)
-    stats = stats_payload(db, campaign_id)
+    runtime_profile = engine_worker._profiles.get(campaign_id, {})
+    stats = stats_payload(
+        db,
+        campaign_id,
+        runtime_batch_size=runtime_profile.get('batch_size'),
+        service_health=engine_worker.service_health_snapshot(),
+    )
     page_size = per_page if per_page in {10, 25, 50} else 25
     status_filter = (status or '').strip().lower()
     allowed_status = {'pending', 'processing', 'sent', 'failed', 'invalid'}
@@ -337,6 +470,30 @@ def update_template_route(campaign_id: int, message_template: str = Form(...), d
     return RedirectResponse(f'/campaigns/{campaign_id}', status_code=303)
 
 
+@app.post('/campaigns/{campaign_id}/settings', dependencies=[Depends(require_auth)])
+def update_campaign_settings_route(
+    campaign_id: int,
+    speed_profile: str = Form('conservative'),
+    send_delay_min_seconds: int = Form(...),
+    send_delay_max_seconds: int = Form(...),
+    batch_pause_min_seconds: int = Form(5),
+    batch_pause_max_seconds: int = Form(10),
+    daily_limit: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    ok, message, settings = update_campaign_operational_settings(
+        db,
+        campaign_id,
+        send_delay_min_seconds,
+        send_delay_max_seconds,
+        daily_limit,
+        speed_profile=speed_profile,
+        batch_pause_min_seconds=batch_pause_min_seconds,
+        batch_pause_max_seconds=batch_pause_max_seconds,
+    )
+    return JSONResponse({'ok': ok, 'message': message, 'settings': settings}, status_code=200 if ok else 400)
+
+
 @app.post('/campaigns/{campaign_id}/contacts/upload', dependencies=[Depends(require_auth)])
 async def upload_contacts_route(campaign_id: int, csv_file: UploadFile = File(...), db: Session = Depends(get_db)):
     content = await csv_file.read()
@@ -362,13 +519,19 @@ def delete_contact_route(campaign_id: int, contact_id: int, db: Session = Depend
     return JSONResponse(result, status_code=200 if result.get('ok') else 400)
 
 
+@app.post('/campaigns/{campaign_id}/contacts/delete-imported', dependencies=[Depends(require_auth)])
+def delete_imported_contacts_route(campaign_id: int, db: Session = Depends(get_db)):
+    result = delete_imported_contacts_from_campaign(db, campaign_id)
+    return JSONResponse(result, status_code=200 if result.get('ok') else 400)
+
+
 @app.post('/campaigns/{campaign_id}/dry-run', dependencies=[Depends(require_auth)])
 def dry_run_route(campaign_id: int, db: Session = Depends(get_db)):
     return JSONResponse(dry_run(db, campaign_id))
 
 
 @app.post('/campaigns/{campaign_id}/test-run', dependencies=[Depends(require_auth)])
-async def test_run_route(campaign_id: int, sample_size: int = Form(10), db: Session = Depends(get_db)):
+async def test_run_route(campaign_id: int, sample_size: int = Form(1), db: Session = Depends(get_db)):
     campaign = get_campaign_or_404(db, campaign_id)
     refresh_campaign_counters(db, campaign_id)
     db.refresh(campaign)
@@ -386,12 +549,21 @@ async def test_run_route(campaign_id: int, sample_size: int = Form(10), db: Sess
         return JSONResponse({'ok': False, 'message': 'Backend WhatsApp não configurado'}, status_code=400)
 
     test_destination, destination_note = await resolve_test_run_destination(client)
+    prior_test_attempts = int(
+        db.scalar(
+            select(func.count(SendLog.id)).where(
+                SendLog.campaign_id == campaign.id,
+                SendLog.event_type == 'test_run_attempt',
+            )
+        )
+        or 0
+    )
     sent = 0
     failures = 0
     failure_reasons: dict[str, int] = {}
     failure_details: list[str] = []
-    for c in candidates:
-        rendered = campaign.message_template.replace('{{nome}}', (c.name or '').strip() or 'cliente')
+    for index, c in enumerate(candidates):
+        rendered = render_test_run_message(campaign.message_template, c.name, c.id, prior_test_attempts + index)
         target_phone = test_destination or (c.phone_e164 or '')
         msg = rendered
         if test_destination:
@@ -400,20 +572,27 @@ async def test_run_route(campaign_id: int, sample_size: int = Form(10), db: Sess
                 f'({c.phone_e164 or c.phone_raw or "-"})\n\n{rendered}'
             )
         try:
+            log_event(db, campaign.id, c.id, 'test_run_attempt', rendered[:160])
+            db.commit()
             await client.send_text(target_phone, msg)
             sent += 1
+            log_event(db, campaign.id, c.id, 'test_run_sent', rendered[:160])
         except WhatsAppError as exc:
             failures += 1
             code, detail = classify_test_run_failure(exc)
             failure_reasons[code] = failure_reasons.get(code, 0) + 1
             if len(failure_details) < 3:
                 failure_details.append(detail)
+            log_event(db, campaign.id, c.id, 'test_run_failure', detail[:160], exc.http_status, exc.error_class)
         except Exception as exc:
             failures += 1
             code, detail = classify_test_run_failure(exc)
             failure_reasons[code] = failure_reasons.get(code, 0) + 1
             if len(failure_details) < 3:
                 failure_details.append(detail)
+            log_event(db, campaign.id, c.id, 'test_run_failure', detail[:160])
+
+    db.commit()
 
     if failures == 0:
         from datetime import datetime, timezone
@@ -481,7 +660,15 @@ def cancel_route(campaign_id: int, db: Session = Depends(get_db)):
 
 @app.get('/campaigns/{campaign_id}/stats', dependencies=[Depends(require_auth)])
 def stats_route(campaign_id: int, db: Session = Depends(get_db)):
-    return JSONResponse(stats_payload(db, campaign_id))
+    runtime_profile = engine_worker._profiles.get(campaign_id, {})
+    return JSONResponse(
+        stats_payload(
+            db,
+            campaign_id,
+            runtime_batch_size=runtime_profile.get('batch_size'),
+            service_health=engine_worker.service_health_snapshot(),
+        )
+    )
 
 
 @app.get('/campaigns/{campaign_id}/overview', dependencies=[Depends(require_auth)])

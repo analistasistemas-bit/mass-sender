@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -9,12 +9,15 @@ from services.campaign_service import (
     add_manual_contact,
     build_activity_payload,
     build_results_payload,
+    delete_campaign,
+    delete_imported_contacts_from_campaign,
     delete_contact_from_campaign,
     dry_run,
     log_event,
     restart_campaign,
     start_campaign,
     stats_payload,
+    upload_contacts,
 )
 
 
@@ -220,6 +223,75 @@ def test_add_manual_contact_reopens_completed_campaign_to_ready():
     assert campaign.finished_at is None
 
 
+def test_upload_contacts_replaces_previous_csv_contacts_and_preserves_manual_ones():
+    session = build_session()
+    campaign = Campaign(name='Reimportar', message_template='Oi {{nome}}', status='draft')
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    session.add_all(
+        [
+            Contact(
+                campaign_id=campaign.id,
+                name='CSV antigo 1',
+                phone_raw='81999990001',
+                phone_e164='+5581999990001',
+                email='old1@csv.com',
+                status='pending',
+                source='csv',
+            ),
+            Contact(
+                campaign_id=campaign.id,
+                name='CSV antigo 2',
+                phone_raw='81999990002',
+                phone_e164='+5581999990002',
+                email='old2@csv.com',
+                status='invalid',
+                error_message='Telefone ausente',
+                source='csv',
+            ),
+            Contact(
+                campaign_id=campaign.id,
+                name='Manual preservado',
+                phone_raw='81999990003',
+                phone_e164='+5581999990003',
+                email='manual@cliente.com',
+                status='pending',
+                source='manual',
+            ),
+        ]
+    )
+    session.commit()
+
+    payload = 'nome,telefone,email\nNovo CSV,81999990004,novo@csv.com\n'.encode('utf-8')
+    result = upload_contacts(session, campaign.id, payload)
+
+    assert result['summary']['total'] == 1
+    assert result['summary']['inserted'] == 1
+
+    contacts = session.query(Contact).filter(Contact.campaign_id == campaign.id).order_by(Contact.id.asc()).all()
+    assert len(contacts) == 2
+    assert {contact.name for contact in contacts} == {'Manual preservado', 'Novo CSV'}
+    assert {contact.source for contact in contacts} == {'manual', 'csv'}
+
+
+def test_upload_contacts_promotes_draft_campaign_to_ready():
+    session = build_session()
+    campaign = Campaign(name='Upload libera fluxo', message_template='Oi {{nome}}', status='draft')
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    payload = 'nome,telefone,email\nNovo CSV,81999990004,novo@csv.com\n'.encode('utf-8')
+
+    result = upload_contacts(session, campaign.id, payload)
+
+    assert result['summary']['inserted'] == 1
+    session.refresh(campaign)
+    assert campaign.status == 'ready'
+
+
 def test_stats_payload_reopens_completed_campaign_when_pending_exists():
     session = build_session()
     campaign = Campaign(
@@ -252,6 +324,33 @@ def test_stats_payload_reopens_completed_campaign_when_pending_exists():
     assert payload['pending'] == 1
     assert campaign.status == 'ready'
     assert campaign.finished_at is None
+
+
+def test_stats_payload_promotes_draft_campaign_when_pending_exists():
+    session = build_session()
+    campaign = Campaign(name='Draft com fila', message_template='Oi {{nome}}', status='draft')
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    session.add(
+        Contact(
+            campaign_id=campaign.id,
+            name='Pendente atual',
+            phone_raw='+55 81999999994',
+            phone_e164='+5581999999994',
+            email='pendente@cliente.com',
+            status='pending',
+        )
+    )
+    session.commit()
+
+    payload = stats_payload(session, campaign.id)
+
+    session.refresh(campaign)
+    assert payload['status'] == 'ready'
+    assert payload['pending'] == 1
+    assert campaign.status == 'ready'
 
 
 def test_start_campaign_allows_reopened_queue_without_new_test_when_history_exists():
@@ -350,6 +449,127 @@ def test_stats_payload_exposes_current_cycle_metrics():
     assert payload['current_cycle']['total'] == 2
 
 
+def test_stats_payload_exposes_observed_performance_and_estimates():
+    session = build_session()
+    started_at = datetime.now(timezone.utc) - timedelta(minutes=4)
+    campaign = Campaign(
+        name='Observed',
+        message_template='Oi {{nome}}',
+        status='running',
+        started_at=started_at,
+        send_delay_min_seconds=5,
+        send_delay_max_seconds=10,
+    )
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    session.add_all(
+        [
+            Contact(
+                campaign_id=campaign.id,
+                name='Sent 1',
+                phone_raw='+55 81999999981',
+                phone_e164='+5581999999981',
+                email='a@cliente.com',
+                status='sent',
+                sent_at=started_at + timedelta(seconds=60),
+            ),
+            Contact(
+                campaign_id=campaign.id,
+                name='Sent 2',
+                phone_raw='+55 81999999982',
+                phone_e164='+5581999999982',
+                email='b@cliente.com',
+                status='sent',
+                sent_at=started_at + timedelta(seconds=120),
+            ),
+            Contact(
+                campaign_id=campaign.id,
+                name='Sent 3',
+                phone_raw='+55 81999999983',
+                phone_e164='+5581999999983',
+                email='c@cliente.com',
+                status='sent',
+                sent_at=started_at + timedelta(seconds=180),
+            ),
+            Contact(
+                campaign_id=campaign.id,
+                name='Pending',
+                phone_raw='+55 81999999984',
+                phone_e164='+5581999999984',
+                email='d@cliente.com',
+                status='pending',
+            ),
+            Contact(
+                campaign_id=campaign.id,
+                name='Pending 2',
+                phone_raw='+55 81999999985',
+                phone_e164='+5581999999985',
+                email='e@cliente.com',
+                status='pending',
+            ),
+        ]
+    )
+    session.commit()
+
+    payload = stats_payload(session, campaign.id)
+
+    assert payload['performance']['warming_up'] is False
+    assert payload['performance']['measurement_basis'] == 'recent_window'
+    assert payload['performance']['sample_size'] == 3
+    assert payload['performance']['observed_seconds_per_contact'] == 60
+    assert payload['performance']['observed_contacts_per_minute'] == 1.0
+    assert payload['estimates']['remaining_seconds_observed'] == 120
+    assert payload['estimates']['configured_batch_pause_min'] == 25
+    assert payload['estimates']['configured_batch_pause_max'] == 40
+    assert 'Config.:' in payload['estimates']['label_configured_pace']
+
+
+def test_stats_payload_marks_warming_up_when_sample_is_too_small():
+    session = build_session()
+    started_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+    campaign = Campaign(
+        name='Warmup',
+        message_template='Oi {{nome}}',
+        status='running',
+        started_at=started_at,
+    )
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    session.add_all(
+        [
+            Contact(
+                campaign_id=campaign.id,
+                name='Sent 1',
+                phone_raw='+55 81999999986',
+                phone_e164='+5581999999986',
+                email='a@cliente.com',
+                status='sent',
+                sent_at=started_at + timedelta(seconds=45),
+            ),
+            Contact(
+                campaign_id=campaign.id,
+                name='Pending',
+                phone_raw='+55 81999999987',
+                phone_e164='+5581999999987',
+                email='b@cliente.com',
+                status='pending',
+            ),
+        ]
+    )
+    session.commit()
+
+    payload = stats_payload(session, campaign.id)
+
+    assert payload['performance']['warming_up'] is True
+    assert payload['performance']['measurement_basis'] == 'warming_up'
+    assert payload['estimates']['label_speed'] == 'Aquecendo medicao'
+    assert payload['estimates']['label_eta'] == 'Calculando com base na execucao real'
+
+
 def test_stats_payload_reconciles_ready_campaign_without_pending_back_to_completed():
     session = build_session()
     campaign = Campaign(
@@ -445,6 +665,126 @@ def test_delete_contact_from_campaign_blocks_when_campaign_running():
     assert session.get(Contact, contact.id) is not None
 
 
+def test_delete_imported_contacts_from_campaign_removes_only_csv_contacts():
+    session = build_session()
+    campaign = Campaign(name='Limpar CSV', message_template='Oi {{nome}}', status='ready')
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    csv_contacts = [
+        Contact(
+            campaign_id=campaign.id,
+            name='CSV 1',
+            phone_raw='+55 81999999991',
+            phone_e164='+5581999999991',
+            email='csv1@x.com',
+            source='csv',
+            status='pending',
+        ),
+        Contact(
+            campaign_id=campaign.id,
+            name='CSV 2',
+            phone_raw='+55 81999999992',
+            phone_e164='+5581999999992',
+            email='csv2@x.com',
+            source='csv',
+            status='invalid',
+        ),
+    ]
+    manual_contact = Contact(
+        campaign_id=campaign.id,
+        name='Manual',
+        phone_raw='+55 81999999993',
+        phone_e164='+5581999999993',
+        email='manual@x.com',
+        source='manual',
+        status='pending',
+    )
+    session.add_all(csv_contacts + [manual_contact])
+    session.commit()
+
+    result = delete_imported_contacts_from_campaign(session, campaign.id)
+
+    assert result['ok'] is True
+    assert result['deleted_count'] == 2
+    assert 'importados' in result['message'].lower()
+    remaining = session.query(Contact).filter(Contact.campaign_id == campaign.id).all()
+    assert len(remaining) == 1
+    assert remaining[0].source == 'manual'
+
+
+def test_delete_imported_contacts_from_campaign_blocks_when_campaign_running():
+    session = build_session()
+    campaign = Campaign(name='Limpar CSV', message_template='Oi {{nome}}', status='running')
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    session.add(
+        Contact(
+            campaign_id=campaign.id,
+            name='CSV 1',
+            phone_raw='+55 81999999991',
+            phone_e164='+5581999999991',
+            email='csv1@x.com',
+            source='csv',
+            status='pending',
+        )
+    )
+    session.commit()
+
+    result = delete_imported_contacts_from_campaign(session, campaign.id)
+
+    assert result['ok'] is False
+    assert 'nao pode limpar' in result['message'].lower()
+    assert session.query(Contact).filter(Contact.campaign_id == campaign.id).count() == 1
+
+
+def test_delete_campaign_removes_campaign_contacts_and_logs():
+    session = build_session()
+    campaign = Campaign(name='Excluir campanha', message_template='Oi {{nome}}', status='paused')
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    contact = Contact(
+        campaign_id=campaign.id,
+        name='Contato',
+        phone_raw='+55 81999999991',
+        phone_e164='+5581999999991',
+        email='x@x.com',
+        source='csv',
+        status='pending',
+    )
+    session.add(contact)
+    session.commit()
+    session.refresh(contact)
+    log_event(session, campaign.id, contact.id, 'campaign_state_change', 'campaign paused')
+    session.commit()
+
+    result = delete_campaign(session, campaign.id)
+
+    assert result['ok'] is True
+    assert 'excluida' in result['message'].lower()
+    assert session.get(Campaign, campaign.id) is None
+    assert session.query(Contact).filter(Contact.campaign_id == campaign.id).count() == 0
+
+
+def test_delete_campaign_blocks_when_running():
+    session = build_session()
+    campaign = Campaign(name='Excluir campanha', message_template='Oi {{nome}}', status='running')
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    result = delete_campaign(session, campaign.id)
+
+    assert result['ok'] is False
+    assert 'nao pode excluir' in result['message'].lower()
+    assert session.get(Campaign, campaign.id) is not None
+
+
 def test_build_results_payload_returns_aggregated_operational_summary():
     session = build_session()
     started_at = datetime.now(timezone.utc)
@@ -480,6 +820,11 @@ def test_build_results_payload_returns_aggregated_operational_summary():
     assert payload['success_rate'] > 60
     assert payload['coverage_rate'] > 0
     assert payload['top_failures']
+    first_failure = payload['top_failures'][0]
+    assert 'human_title' in first_failure
+    assert 'recommended_action' in first_failure
+    assert first_failure['technical_detail_available'] is True
+    assert first_failure['fingerprint']
 
 
 def test_build_activity_payload_groups_high_volume_logs():
@@ -511,3 +856,49 @@ def test_build_activity_payload_groups_high_volume_logs():
     assert any(item['title'] == 'Campanha iniciada' for item in payload['milestones'])
     assert any(item['title'] == 'Lote processado' and '1.000' in item['summary'] for item in payload['milestones'])
     assert any(item['title'] == 'Pico de falhas' for item in payload['milestones'])
+
+
+def test_build_activity_payload_humanizes_incidents_and_groups_by_fingerprint():
+    session = build_session()
+    campaign = Campaign(name='Incidentes', message_template='Oi {{nome}}', status='paused')
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    log_event(
+        session,
+        campaign.id,
+        None,
+        'retry_scheduled',
+        'Temporário: {"ok":false,"message":"Attempted to use detached Frame \\"frame-1\\".","state":"ready"}',
+        502,
+        'temporary',
+    )
+    log_event(
+        session,
+        campaign.id,
+        None,
+        'retry_scheduled',
+        'Temporário: {"ok":false,"message":"Attempted to use detached Frame \\"frame-2\\".","state":"ready"}',
+        502,
+        'temporary',
+    )
+    log_event(
+        session,
+        campaign.id,
+        None,
+        'campaign_auto_paused_consecutive_failures',
+        'A campanha foi pausada apos 5 falhas consecutivas.',
+    )
+    session.commit()
+
+    payload = build_activity_payload(session, campaign.id)
+
+    detached = next(item for item in payload['incidents'] if item['fingerprint'].endswith('bridge_session_detached:502'))
+    assert detached['count'] == 2
+    assert detached['human_title'] == 'Sessao do WhatsApp instavel'
+    assert detached['technical_detail_available'] is True
+    assert 'Reinicie a sessao do WhatsApp' in detached['recommended_action']
+
+    paused = next(item for item in payload['incidents'] if item['fingerprint'].endswith('consecutive_failures_pause:-'))
+    assert paused['human_summary'] == 'O sistema interrompeu a campanha apos uma sequencia anormal de falhas.'

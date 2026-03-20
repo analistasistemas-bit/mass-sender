@@ -42,6 +42,13 @@ def test_bridge_routes_require_auth():
     assert response.status_code == 401
 
 
+def test_html_routes_redirect_to_login_when_unauthenticated():
+    client = TestClient(main.app)
+    response = client.get('/', follow_redirects=False, headers={'accept': 'text/html'})
+    assert response.status_code == 303
+    assert response.headers['location'] == '/login'
+
+
 def test_bridge_routes_with_auth(monkeypatch):
     monkeypatch.setattr(main, 'WhatsAppClient', _FakeBridgeClient)
     client = TestClient(main.app)

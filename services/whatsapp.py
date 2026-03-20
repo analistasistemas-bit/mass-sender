@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import shutil
+from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -11,6 +15,28 @@ class WhatsAppError(Exception):
         super().__init__(message)
         self.http_status = http_status
         self.error_class = error_class
+
+
+def is_bridge_session_error_message(message: str | None) -> bool:
+    lowered = str(message or '').lower()
+    markers = (
+        'attempted to use detached frame',
+        'execution context was destroyed',
+        'target closed',
+        'session closed',
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def is_bridge_session_healthy(session: Optional[dict]) -> bool:
+    if not session:
+        return False
+    if not session.get('connected'):
+        return False
+    state = str(session.get('state') or '').lower()
+    if state not in {'ready', 'connected'}:
+        return False
+    return not is_bridge_session_error_message(session.get('lastError'))
 
 
 def classify_http_error(status_code: int) -> str:
@@ -82,8 +108,9 @@ class WhatsAppClient:
             raise WhatsAppError(str(exc), error_class=classify_exception(exc)) from exc
 
         if response.status_code >= 400:
-            err_class = classify_http_error(response.status_code)
-            raise WhatsAppError(response.text[:500], http_status=response.status_code, error_class=err_class)
+            message = response.text[:500]
+            err_class = 'session' if is_bridge_session_error_message(message) else classify_http_error(response.status_code)
+            raise WhatsAppError(message, http_status=response.status_code, error_class=err_class)
 
         try:
             return response.json()
@@ -106,8 +133,9 @@ class WhatsAppClient:
             raise WhatsAppError(str(exc), error_class=classify_exception(exc)) from exc
 
         if response.status_code >= 400:
-            err_class = classify_http_error(response.status_code)
-            raise WhatsAppError(response.text[:500], http_status=response.status_code, error_class=err_class)
+            message = response.text[:500]
+            err_class = 'session' if self.provider == 'bridge' and is_bridge_session_error_message(message) else classify_http_error(response.status_code)
+            raise WhatsAppError(message, http_status=response.status_code, error_class=err_class)
 
     async def bridge_session(self) -> dict:
         return await self._bridge_request('GET', '/session')
@@ -121,6 +149,49 @@ class WhatsAppClient:
     async def bridge_reset(self) -> dict:
         return await self._bridge_request('POST', '/session/reset')
 
+    def can_manage_local_bridge(self) -> bool:
+        if self.provider != 'bridge':
+            return False
+        if not self.bridge_base_url:
+            return False
+        parsed = urlparse(self.bridge_base_url)
+        host = (parsed.hostname or '').strip().lower()
+        bridge_dir = Path(__file__).resolve().parent.parent / 'wa-bridge'
+        return host in {'127.0.0.1', 'localhost', '::1'} and bridge_dir.exists() and (bridge_dir / 'package.json').exists()
+
+    async def bridge_restart_local_process(self) -> bool:
+        if not self.can_manage_local_bridge():
+            return False
+
+        bridge_dir = Path(__file__).resolve().parent.parent / 'wa-bridge'
+        npm_bin = shutil.which('npm')
+        pkill_bin = shutil.which('pkill')
+        if not npm_bin:
+            return False
+
+        if pkill_bin:
+            stop_process = await asyncio.create_subprocess_exec(
+                pkill_bin,
+                '-f',
+                str(bridge_dir / 'server.js'),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await stop_process.wait()
+
+        start_process = await asyncio.create_subprocess_exec(
+            npm_bin,
+            'start',
+            cwd=str(bridge_dir),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        await asyncio.sleep(1)
+        return start_process.returncode in {None, 0}
+
     async def healthcheck(self) -> tuple[bool, str]:
         if not self.configured:
             return False, 'Credenciais ausentes'
@@ -133,6 +204,8 @@ class WhatsAppClient:
                         payload = response.json()
                         connected = payload.get('connected')
                         state = payload.get('state', 'unknown')
+                        if connected and is_bridge_session_error_message(payload.get('lastError')):
+                            return True, f'Bridge acessível, sessão instável ({state})'
                         if connected:
                             return True, f'Bridge acessível ({state})'
                         return True, f'Bridge acessível, sessão {state}'

@@ -27,6 +27,51 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
     started_at: null,
     finished_at: null,
     updated_at: '2026-03-18T12:00:00+00:00',
+    sent_today: 0,
+    daily_limit: 0,
+    pause_reason: null,
+    speed_profile: 'conservative',
+    send_delay_min_seconds: 15,
+    send_delay_max_seconds: 45,
+    batch_pause_min_seconds: 25,
+    batch_pause_max_seconds: 40,
+    batch_size_initial: 10,
+    batch_size_max: 25,
+    batch_growth_step: 2,
+    batch_growth_streak_required: 3,
+    batch_shrink_step: 2,
+    batch_shrink_error_streak_required: 2,
+    batch_size_floor: 5,
+    send_window_start: '08:00',
+    send_window_end: '20:00',
+    runtime_profile: {
+      selected_profile: 'conservative',
+      effective_profile: 'conservative',
+      batch_size_current: 10,
+      batch_pause_min_seconds: 25,
+      batch_pause_max_seconds: 40,
+      profile_source: 'preset',
+    },
+    performance: {
+      observed_contacts_per_minute: 0,
+      observed_seconds_per_contact: 0,
+      measurement_window_seconds: 600,
+      measurement_basis: 'warming_up',
+      last_activity_at: null,
+      sample_size: 0,
+      warming_up: true,
+    },
+    estimates: {
+      remaining_seconds_observed: 0,
+      remaining_seconds_conservative: 0,
+      configured_seconds_per_contact_min: 15,
+      configured_seconds_per_contact_max: 45,
+      configured_batch_pause_min: 25,
+      configured_batch_pause_max: 40,
+      label_speed: 'Aquecendo medicao',
+      label_eta: 'Calculando com base na execucao real',
+      label_configured_pace: 'Config.: 15-45s por envio + pausas operacionais',
+    },
   };
   let overviewState = {
     results: {
@@ -62,8 +107,21 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
     },
   };
   let deleteContactCalled = false;
+  let deleteImportedCalled = false;
+  let deleteCampaignCalled = false;
   let currentContactsPage = 1;
   let currentPerPage = 25;
+  let currentStatusFilter = '';
+  let overviewFailureCountdown = 0;
+  let contactsItems = Array.from({ length: 26 }, (_, index) => ({
+    id: index + 1,
+    name: `Cliente ${index + 1}`,
+    phone_raw: `819999999${String(index + 1).padStart(2, '0')}`,
+    phone_e164: `+55819999999${String(index + 1).padStart(2, '0')}`,
+    email: `cliente${index + 1}@example.com`,
+    status: 'failed',
+    error_message: '',
+  }));
 
   await page.route('**/bridge/session', async (route) => {
     await route.fulfill({
@@ -119,6 +177,15 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
   });
 
   await page.route('**/campaigns/*/overview', async (route) => {
+    if (overviewFailureCountdown > 0) {
+      overviewFailureCountdown -= 1;
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: false, message: 'overview temporarily unavailable' }),
+      });
+      return;
+    }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -126,14 +193,78 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
     });
   });
 
+  await page.route('**/campaigns/*/settings', async (route) => {
+    const body = route.request().postData() || '';
+    const params = new URLSearchParams(body);
+    const minDelay = Number(params.get('send_delay_min_seconds') || '15');
+    const maxDelay = Number(params.get('send_delay_max_seconds') || '45');
+    const batchPauseMin = Number(params.get('batch_pause_min_seconds') || '25');
+    const batchPauseMax = Number(params.get('batch_pause_max_seconds') || '40');
+    const speedProfile = params.get('speed_profile') || 'conservative';
+    statsState = {
+      ...statsState,
+      speed_profile: speedProfile,
+      send_delay_min_seconds: minDelay,
+      send_delay_max_seconds: maxDelay,
+      batch_pause_min_seconds: batchPauseMin,
+      batch_pause_max_seconds: batchPauseMax,
+      daily_limit: Number(params.get('daily_limit') || '0'),
+      runtime_profile: {
+        ...statsState.runtime_profile,
+        selected_profile: speedProfile,
+        effective_profile: speedProfile,
+        batch_pause_min_seconds: batchPauseMin,
+        batch_pause_max_seconds: batchPauseMax,
+        profile_source: speedProfile === 'custom' ? 'manual_override' : 'preset',
+      },
+      estimates: {
+        ...statsState.estimates,
+        configured_seconds_per_contact_min: minDelay,
+        configured_seconds_per_contact_max: maxDelay,
+        configured_batch_pause_min: batchPauseMin,
+        configured_batch_pause_max: batchPauseMax,
+        label_configured_pace: `Config.: ${minDelay}-${maxDelay}s por envio + pausas operacionais`,
+      },
+      updated_at: '2026-03-18T12:00:15+00:00',
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        message: 'Configuracoes operacionais salvas.',
+        settings: {
+          speed_profile: speedProfile,
+          send_delay_min_seconds: minDelay,
+          send_delay_max_seconds: maxDelay,
+          batch_pause_min_seconds: batchPauseMin,
+          batch_pause_max_seconds: batchPauseMax,
+          daily_limit: statsState.daily_limit,
+        },
+      }),
+    });
+  });
+
   await page.route('**/campaigns/*/contacts/upload', async (route) => {
+    contactsItems = [
+      {
+        id: 901,
+        name: 'Cliente E2E',
+        phone_raw: '11999998888',
+        phone_e164: '+5511999998888',
+        email: 'cliente-e2e@teste.com',
+        status: 'pending',
+        error_message: '',
+      },
+      ...contactsItems.filter((item) => item.id === 900),
+    ];
     statsState = {
       ...statsState,
       status: 'ready',
-      pending: 1,
-      valid: 1,
+      pending: 2,
+      valid: 2,
       invalid: 0,
-      total: 1,
+      total: 2,
       updated_at: '2026-03-18T12:01:00+00:00',
     };
     overviewState = {
@@ -143,7 +274,7 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
         headline: 'Resultados parciais',
         summary: 'Base pronta para a proxima etapa operacional.',
         coverage_rate: 0,
-        distribution: { sent: 0, failed: 0, pending: 1, invalid: 0, valid: 1, total: 1 },
+        distribution: { sent: 0, failed: 0, pending: 2, invalid: 0, valid: 2, total: 2 },
       },
     };
     await route.fulfill({
@@ -204,18 +335,11 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
     const url = new URL(route.request().url());
     currentContactsPage = Number(url.searchParams.get('page') || '1');
     currentPerPage = Number(url.searchParams.get('per_page') || '25');
-    const allItems = Array.from({ length: 26 }, (_, index) => ({
-      id: index + 1,
-      name: `Cliente ${index + 1}`,
-      phone_raw: `819999999${String(index + 1).padStart(2, '0')}`,
-      phone_e164: `+55819999999${String(index + 1).padStart(2, '0')}`,
-      email: `cliente${index + 1}@example.com`,
-      status: 'pending',
-      error_message: '',
-    }));
+    currentStatusFilter = (url.searchParams.get('status') || '').trim();
+    const filteredItems = currentStatusFilter ? contactsItems.filter((item) => item.status === currentStatusFilter) : contactsItems;
     const offset = (currentContactsPage - 1) * currentPerPage;
-    const items = allItems.slice(offset, offset + currentPerPage);
-    const totalPages = Math.max(1, Math.ceil(allItems.length / currentPerPage));
+    const items = filteredItems.slice(offset, offset + currentPerPage);
+    const totalPages = Math.max(1, Math.ceil(filteredItems.length / currentPerPage));
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -224,16 +348,17 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
         pagination: {
           page: currentContactsPage,
           total_pages: totalPages,
-          total: allItems.length,
+          total: filteredItems.length,
           page_size: currentPerPage,
         },
-        status_filter: '',
+        status_filter: currentStatusFilter,
       }),
     });
   });
 
   await page.route('**/campaigns/*/contacts/*/delete', async (route) => {
     deleteContactCalled = true;
+    contactsItems = contactsItems.slice(1);
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -241,7 +366,45 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
     });
   });
 
+  await page.route('**/campaigns/*/contacts/delete-imported', async (route) => {
+    deleteImportedCalled = true;
+    contactsItems = [
+      {
+        id: 900,
+        name: 'Cliente Manual',
+        phone_raw: '+55 81999999999',
+        phone_e164: '+5581999999999',
+        email: 'manual@cliente.com',
+        status: 'pending',
+        error_message: '',
+      },
+    ];
+    statsState = {
+      ...statsState,
+      pending: 1,
+      valid: 1,
+      invalid: 0,
+      total: 1,
+      updated_at: '2026-03-18T12:01:30+00:00',
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, message: 'Contatos importados removidos com sucesso.', deleted_count: 25 }),
+    });
+  });
+
+  await page.route('**/campaigns/*/delete', async (route) => {
+    deleteCampaignCalled = true;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, message: 'Campanha excluida com sucesso.', redirect_url: '/' }),
+    });
+  });
+
   await page.route('**/campaigns/*/dry-run', async (route) => {
+    await page.waitForTimeout(250);
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -268,6 +431,7 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
   });
 
   await page.route('**/campaigns/*/test-run', async (route) => {
+    await page.waitForTimeout(250);
     statsState = {
       ...statsState,
       test_completed_at: '2026-03-18T12:03:00+00:00',
@@ -307,11 +471,32 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
   });
 
   await page.route('**/campaigns/*/start', async (route) => {
+    sessionState = {
+      ...sessionState,
+      lastError: "Attempted to use detached Frame 'frame-1'.",
+    };
     statsState = {
       ...statsState,
       status: 'running',
       started_at: '2026-03-18T12:04:00+00:00',
       updated_at: '2026-03-18T12:04:00+00:00',
+      pause_reason: null,
+      sent_today: 0,
+      performance: {
+        observed_contacts_per_minute: 0,
+        observed_seconds_per_contact: 0,
+        measurement_window_seconds: 600,
+        measurement_basis: 'warming_up',
+        last_activity_at: null,
+        sample_size: 0,
+        warming_up: true,
+      },
+      estimates: {
+        ...statsState.estimates,
+        remaining_seconds_observed: 0,
+        label_speed: 'Aquecendo medicao',
+        label_eta: 'Calculando com base na execucao real',
+      },
     };
     overviewState = {
       ...overviewState,
@@ -351,6 +536,7 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
       ...statsState,
       status: 'paused',
       updated_at: '2026-03-18T12:05:00+00:00',
+      pause_reason: 'consecutive_failures',
     };
     await route.fulfill({
       status: 200,
@@ -366,6 +552,24 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
       sent: 1,
       pending: 0,
       updated_at: '2026-03-18T12:06:00+00:00',
+      sent_today: 1,
+      pause_reason: null,
+      performance: {
+        observed_contacts_per_minute: 1.2,
+        observed_seconds_per_contact: 50,
+        measurement_window_seconds: 600,
+        measurement_basis: 'recent_window',
+        last_activity_at: '2026-03-18T12:05:50+00:00',
+        sample_size: 4,
+        warming_up: false,
+      },
+      estimates: {
+        ...statsState.estimates,
+        remaining_seconds_observed: 0,
+        remaining_seconds_conservative: 0,
+        label_speed: '1,2 contato/min',
+        label_eta: '0',
+      },
     };
     overviewState = {
       results: {
@@ -402,7 +606,21 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
           { title: 'Lote processado', summary: 'Lote de 1 contatos processado.', time: '2026-03-18T12:05:50+00:00', tone: 'success' },
         ],
         incidents: [
-          { title: 'Falha de envio', summary: 'Sistema de envio indisponivel', tone: 'error', count: 4, time: '2026-03-18T12:05:40+00:00', error_class: 'temporary', http_status: 503 },
+          {
+            title: 'Falha de envio',
+            summary: 'Sistema de envio indisponivel',
+            tone: 'error',
+            count: 4,
+            time: '2026-03-18T12:05:40+00:00',
+            error_class: 'temporary',
+            http_status: 503,
+            human_title: 'Bridge indisponivel',
+            human_summary: 'O servico de envio nao respondeu no momento da tentativa.',
+            recommended_action: 'Verifique o wa-bridge e a conectividade local.',
+            technical_summary: 'All connection attempts failed',
+            technical_detail_available: true,
+            fingerprint: 'send_failure:bridge_unreachable:503',
+          },
         ],
       },
     };
@@ -443,6 +661,20 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
 
   await expect(page.getByRole('heading', { name: 'Campanha E2E' })).toBeVisible();
   await expect(page.locator('[data-testid="campaign-stepper"]')).toBeVisible();
+  await expect(page.getByText('Configuracoes operacionais')).toBeVisible();
+  await expect(page.locator('#speed-profile-badge')).toContainText('Conservador');
+  await page.getByRole('button', { name: 'Modo agressivo' }).click();
+  await expect(page.locator('#settings-form input[name="send_delay_min_seconds"]')).toHaveValue('3');
+  await expect(page.locator('#settings-form input[name="batch_pause_max_seconds"]')).toHaveValue('10');
+  await expect(page.locator('#speed-profile-badge')).toContainText('Agressivo');
+  await page.locator('#settings-form input[name="send_delay_min_seconds"]').fill('18');
+  await page.locator('#settings-form input[name="send_delay_max_seconds"]').fill('48');
+  await page.locator('#settings-form input[name="batch_pause_min_seconds"]').fill('11');
+  await page.locator('#settings-form input[name="batch_pause_max_seconds"]').fill('16');
+  await page.locator('#settings-form input[name="daily_limit"]').fill('250');
+  await expect(page.locator('#speed-profile-badge')).toContainText('Customizado');
+  await page.getByRole('button', { name: 'Salvar configuracoes' }).click();
+  await expect(page.getByText('Configuracoes operacionais salvas.')).toBeVisible();
   await expect(page.locator('[data-testid="status-narrative"]')).toContainText('Configure sua campanha para validar contatos antes do envio.');
   await expect(page.getByRole('button', { name: 'Simular campanha' })).toBeVisible();
   await expect(page.locator('[data-testid="primary-action"]')).toContainText('Simular campanha');
@@ -470,53 +702,91 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
   await page.getByRole('button', { name: 'Salvar cliente' }).click();
   await expect(page.getByText('Cliente adicionado manualmente.')).toBeVisible();
 
-  await page.getByRole('button', { name: 'Excluir' }).first().click();
+  await page.locator('#contacts-body').getByRole('button', { name: 'Excluir' }).first().click();
   await expect(page.locator('#confirm-title')).toContainText('Excluir contato da campanha');
   await page.getByRole('button', { name: 'Confirmar' }).click();
   await expect(page.getByText('Contato removido da campanha.')).toBeVisible();
   expect(deleteContactCalled).toBeTruthy();
 
+  await page.getByRole('button', { name: 'Limpar base importada' }).click();
+  await expect(page.locator('#confirm-title')).toContainText('Limpar base importada');
+  await page.getByRole('button', { name: 'Confirmar' }).click();
+  await expect(page.getByText('Contatos importados removidos com sucesso.')).toBeVisible();
+  await expect(page.locator('#contacts-meta')).toContainText('Total exibido: 0 de 0 registros. Pagina 1 de 1.');
+  expect(deleteImportedCalled).toBeTruthy();
+
   await page.locator('textarea[name="message_template"]').fill('Oi, {{nome}}! Mensagem E2E');
   await page.getByRole('button', { name: 'Salvar mensagem' }).click();
 
   await page.setInputFiles('input[name="csv_file"]', path.resolve(__dirname, '../fixtures/contatos_e2e.csv'));
+  await expect
+    .poll(async () =>
+      page.locator('input[name="csv_file"]').evaluate((element) => {
+        return element instanceof HTMLInputElement ? element.files?.[0]?.name || '' : '';
+      }),
+    )
+    .toBe('contatos_e2e.csv');
   await page.getByRole('button', { name: 'Enviar arquivo CSV' }).click();
   await expect(page.getByText('Upload concluido com sucesso.')).toBeVisible();
-  await expect(page.locator('#upload-summary')).toContainText('1 contato pronto para envio');
+  await expect(page.locator('#upload-summary')).toContainText('2 contatos prontos para envio');
+  await expect(page.locator('[data-testid="status-filter-trigger"]')).toHaveText(/Todos/);
+  await expect(page.locator('#contacts-body')).toContainText('Cliente E2E');
 
-  await page.getByRole('button', { name: 'Simular campanha' }).click();
+  const dryRunPromise = page.getByRole('button', { name: 'Simular campanha' }).click();
+  await expect(page.locator('[data-testid="status-narrative"]')).toContainText('Processando simulacao da campanha...');
+  await dryRunPromise;
   await expect(page.locator('[data-testid="status-narrative"]')).toContainText('Tudo pronto para uma verificacao final.');
   await expect(page.getByText('Tempo estimado')).toBeVisible();
-  await expect(page.getByText('7s')).toBeVisible();
+  await expect(page.locator('#eta-value')).toContainText('Estimando');
+  await expect(page.locator('#speed-value')).toContainText('Medindo');
+  await expect(page.locator('#runtime-profile-badge')).toContainText('Perfil customizado');
 
-  await page.getByRole('button', { name: 'Enviar teste' }).click();
+  const testRunPromise = page.getByRole('button', { name: 'Enviar teste' }).click();
+  await expect(page.locator('[data-testid="status-narrative"]')).toContainText('Processando inicio de teste...');
+  await testRunPromise;
   await expect(page.getByText('Amostra enviada para confirmacao.')).toBeVisible();
   await expect(page.locator('[data-testid="primary-action"]')).toContainText('Iniciar campanha');
 
   await page.getByRole('button', { name: 'Iniciar campanha' }).click();
-  await expect(page.locator('[data-testid="status-narrative"]')).toContainText('Enviando mensagens');
+  await expect(page.locator('[data-testid="status-narrative"]')).toContainText('Envio em risco');
   await expect(page.locator('[data-testid="primary-action"]')).toContainText('Pausar campanha');
   await expect(page.locator('[data-testid="execution-progress-bar"]')).toBeVisible();
+  await expect(page.locator('#speed-note')).toContainText('Config. 18-48s + pausas');
+  await expect(page.locator('#daily-limit-summary')).toContainText('Hoje: 0 / 250 envios');
+  await page.getByRole('button', { name: 'Modo conservador' }).click();
+  await expect(page.locator('#confirm-title')).toContainText('Aplicar novo modo de velocidade');
+  await page.getByRole('button', { name: 'Aplicar modo' }).click();
+  await expect(page.locator('#runtime-profile-badge')).toContainText('Perfil conservador');
+  await expect(page.locator('#speed-note')).toContainText('Config. 15-45s + pausas');
+  await page.getByRole('button', { name: 'Minimizar' }).click();
+  await expect(page.locator('[data-testid="execution-progress-bar"]')).toHaveClass(/is-collapsed/);
+  await expect(page.locator('#execution-progress-pill')).toBeVisible();
+  await page.locator('#execution-progress-pill').click();
+  await expect(page.locator('#execution-progress-pill')).toHaveClass(/hidden/);
   await page.getByRole('button', { name: 'Abortar' }).click();
   await expect(page.locator('#confirm-title')).toContainText('Abortar envio da campanha');
   await expect(page.locator('#confirm-cancel')).toBeFocused();
   await page.locator('#confirm-cancel').click();
 
   await page.getByRole('button', { name: 'Pausar campanha' }).click();
-  await expect(page.locator('[data-testid="status-narrative"]')).toContainText('Campanha pausada');
+  await expect(page.locator('[data-testid="status-narrative"]')).toContainText('5 falhas consecutivas');
   await expect(page.locator('[data-testid="primary-action"]')).toContainText('Retomar campanha');
 
   await page.getByRole('button', { name: 'Retomar campanha' }).click();
+  await page.waitForTimeout(13000);
   statsState = {
     ...statsState,
     status: 'completed',
     finished_at: '2026-03-18T12:07:00+00:00',
     updated_at: '2026-03-18T12:07:00+00:00',
   };
+  overviewFailureCountdown = 2;
   await page.reload();
+  await page.waitForTimeout(6500);
 
   await expect(page.locator('[data-testid="status-narrative"]')).toContainText('Campanha finalizada com sucesso.');
   await expect(page.locator('[data-testid="primary-action"]')).toContainText('Ver resultados');
+  await expect(page.getByText('Falha temporaria ao carregar resultados e atividade detalhados.')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Ver resultados' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Exportar falhas' })).toBeVisible();
   await expect(page.locator('.stepper-item[data-step-key="3"]')).toHaveAttribute('data-step-state', 'done');
@@ -537,7 +807,8 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
   await page.locator('#manual-contact-form input[name="phone"]').fill('+55 81999999998');
   await page.getByRole('button', { name: 'Salvar cliente' }).click();
   await expect(page.getByText('Cliente adicionado manualmente.')).toBeVisible();
-  await expect(page.locator('[data-testid="primary-action"]')).toContainText('Iniciar campanha');
+  await expect(page.locator('#campaign-status-badge')).toContainText('Pronta');
+  await expect(page.locator('[data-testid="primary-action"]')).toContainText('Iniciar campanha', { timeout: 10000 });
 
   statsState = {
     ...statsState,
@@ -552,7 +823,8 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
   await page.getByRole('button', { name: 'Mostrar atividade tecnica' }).click();
   await expect(page.locator('[data-testid="logs-panel"]')).toContainText('Incidentes agrupados');
   await expect(page.locator('#activity-summary-grid')).toContainText('Entregas confirmadas');
-  await expect(page.locator('#activity-incidents')).toContainText('Sistema de envio indisponivel');
+  await expect(page.locator('#activity-incidents')).toContainText('Bridge indisponivel');
+  await expect(page.locator('#activity-incidents')).toContainText('Verifique o wa-bridge e a conectividade local.');
   await expect(page.locator('#activity-milestones')).toContainText('Campanha concluida');
   await expect(page.locator('#activity-milestones')).toContainText('Campanha iniciada');
   await expect(page.locator('#activity-milestones')).toContainText('Lote processado');
@@ -561,4 +833,12 @@ test('fluxo operacional guiado da home ate a conclusao', async ({ page }) => {
   await expect(page.locator('[data-testid="contacts-table-wrap"]')).toBeVisible();
   await page.setViewportSize({ width: 430, height: 932 });
   await expect(page.locator('[data-testid="contacts-table-wrap"]')).toBeVisible();
+
+  await page.getByRole('link', { name: /Voltar para operacao/ }).click();
+  await expect(page.getByRole('heading', { name: 'Operacao de campanhas' })).toBeVisible();
+  await page.getByRole('button', { name: 'Excluir' }).first().click();
+  await expect(page.locator('#bridge-confirm-title')).toContainText('Excluir campanha');
+  await page.getByRole('button', { name: 'Confirmar' }).click();
+  await expect(page.getByText('Campanha excluida com sucesso.')).toBeVisible();
+  expect(deleteCampaignCalled).toBeTruthy();
 });

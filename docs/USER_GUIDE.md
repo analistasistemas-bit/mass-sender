@@ -17,6 +17,10 @@ Este documento explica, passo a passo, como usar o aplicativo para:
 
 Este guia foi escrito para operadores do sistema, não para manutenção técnica.
 
+Se você quiser a explicação detalhada da ultima implementação de controle operacional, inclusive comportamento com grandes bases, veja:
+
+- [OPERATIONAL_CONTROLS.md](/Users/mac/Desktop/IA/mass-sender/docs/OPERATIONAL_CONTROLS.md)
+
 ## Antes de Começar
 
 Você precisa ter o sistema já ligado:
@@ -112,6 +116,12 @@ Mostra:
 - narrativa humana do que está acontecendo
 - atualização automática
 
+Essa narrativa muda imediatamente quando você dispara ações críticas. Por exemplo:
+
+- `Processando reabertura da campanha...`
+- `Processando inicio de teste...`
+- `Processando inicio da campanha...`
+
 2. Stepper
 Mostra o fluxo:
 - Conectar WhatsApp
@@ -127,6 +137,9 @@ Mostra apenas o próximo passo dominante para o estado atual.
 Regra prática:
 
 - se você estiver em dúvida, use primeiro o botão principal
+- toda ação crítica mostra uma narrativa de processamento enquanto a requisição está em andamento
+- exemplos: `Processando reabertura da campanha...`, `Processando inicio de teste...`, `Processando inicio da campanha...`
+- isso evita a sensação de clique sem resposta e deixa claro o que o sistema está fazendo
 
 ## 4. Escrever ou Ajustar a Mensagem
 
@@ -143,6 +156,49 @@ Oi, {{nome}}! Estamos entrando em contato para confirmar seu convite.
 ```
 
 Se o contato não tiver nome, o sistema usa um fallback equivalente a `cliente`.
+
+Durante o envio real, o sistema adiciona automaticamente uma saudação no início da mensagem:
+
+- `Ola`
+- `Oi`
+- `Bom dia`
+
+O restante do template permanece igual. Exemplo:
+
+```text
+Oi, Maria!
+
+Temos uma novidade para voce.
+```
+
+Essa saudação é escolhida automaticamente pelo sistema e permanece consistente para o mesmo contato, inclusive em nova tentativa.
+
+## 4.1 Configuracoes Operacionais
+
+Ainda na área `Mensagem e validação`, existe o bloco `Configuracoes operacionais`.
+
+Nele você pode definir:
+
+- `Atraso minimo (segundos)`
+- `Atraso maximo (segundos)`
+- `Maximo de envios por dia`
+
+Regras:
+
+- o sistema sorteia um atraso entre o minimo e o maximo antes de cada envio
+- use `0` em `Maximo de envios por dia` para deixar sem limite diario
+- a janela operacional fixa do sistema é `08h-20h`
+
+Exemplo de configuração conservadora:
+
+- minimo: `15`
+- maximo: `45`
+- maximo por dia: `250`
+
+Depois de ajustar:
+
+1. Clique em `Salvar configuracoes`
+2. Aguarde o toast `Configuracoes operacionais salvas.`
 
 ## 5. Preparar o CSV
 
@@ -262,6 +318,7 @@ O status muda para `Em envio` e a tela passa a destacar:
 - narrativa do envio
 - progresso
 - ação principal `Pausar campanha`
+- resumo do dia com a linha `Hoje: X / Y envios`
 
 ## 10. Acompanhar o Progresso
 
@@ -278,6 +335,12 @@ Durante o envio, a narrativa pode mostrar algo como:
 
 - `Enviando mensagens...`
 
+O sistema também passa a respeitar automaticamente:
+
+- janela de envio entre `08h` e `20h`
+- limite diario configurado para a campanha
+- pausa automatica se houver `5` falhas consecutivas
+
 Quando a campanha estiver em envio ativo, uma barra fixa de execução aparece na tela.
 
 Essa barra mostra:
@@ -293,6 +356,7 @@ Importante:
 - o envio continua mesmo se você sair da página
 - o envio só para se você confirmar `Abortar`
 - ao clicar em `Abortar`, o sistema pede uma segunda confirmação
+- se a tela mostrar um aviso temporário de atualização de resultados logo após iniciar ou reabrir a campanha, aguarde a próxima atualização automática; o console prioriza primeiro o estado da ação crítica que você acabou de disparar
 
 ## Remover Contato Importado
 
@@ -313,6 +377,28 @@ Regras:
 - durante `running` a exclusão fica bloqueada
 - em campanhas `completed` ou `cancelled` a exclusão também não é permitida
 
+## Limpar Base Importada
+
+Quando precisar substituir toda a base de CSV de uma campanha, use o botão `Limpar base importada` no topo direito do card `Contatos importados`.
+
+Como funciona:
+
+1. Clique em `Limpar base importada`
+2. Confirme no modal de segurança
+3. Aguarde a atualização da tabela e dos contadores
+
+O que a ação faz:
+
+- remove todos os contatos que vieram de importações CSV anteriores
+- preserva os contatos adicionados manualmente
+- atualiza resumo, paginação, progresso e fila da campanha
+
+Regras:
+
+- a limpeza em massa só fica disponível em `draft`, `ready` e `paused`
+- durante `running`, `completed` e `cancelled` a ação fica bloqueada
+- se não houver contatos de CSV para limpar, o sistema informa isso sem apagar contatos manuais
+
 ## Reabrir Campanha com Novos Contatos
 
 Se uma campanha já teve envio real e você adicionar novos contatos depois:
@@ -322,6 +408,32 @@ Se uma campanha já teve envio real e você adicionar novos contatos depois:
 - os contatos já enviados continuam marcados como enviados
 - os novos contatos entram na fila pendente
 - se a campanha já teve envio real antes, o sistema libera novo início sem exigir um novo teste apenas por causa dessa reabertura
+
+## Excluir Campanha
+
+Você pode excluir uma campanha de duas formas:
+
+- pela home, no card da campanha
+- pela própria tela da campanha, no topo
+
+Como funciona:
+
+1. Abra a campanha que deseja remover
+2. Clique em `Excluir campanha`
+3. Revise a confirmação crítica
+4. Clique em `Confirmar`
+
+O que acontece:
+
+- a campanha é removida permanentemente
+- os contatos vinculados à campanha são removidos junto
+- o histórico operacional dessa campanha também é removido
+- após o sucesso, o sistema redireciona você para a home
+
+Regra de segurança:
+
+- campanhas em `running` não podem ser excluídas
+- para excluir uma campanha em envio ativo, primeiro pause ou cancele o envio
 
 ## 12. Pausar a Campanha
 
@@ -335,6 +447,14 @@ Resultado esperado:
 - a narrativa informa que nenhum envio acontecerá até retomada
 - a ação principal muda para `Retomar campanha`
 
+Existem dois tipos de pausa:
+
+- `Pausa manual`
+Quando o operador clicou em `Pausar campanha`
+
+- `Pausa automatica`
+Quando o sistema precisou interromper por proteção operacional
+
 ## 13. Retomar a Campanha
 
 Para continuar:
@@ -344,6 +464,27 @@ Para continuar:
 Resultado esperado:
 
 - a campanha volta ao fluxo de envio
+
+Se a pausa tiver acontecido por `limite diario atingido`, a retomada deve ser feita manualmente no dia seguinte.
+
+Se a pausa tiver acontecido por `5 falhas consecutivas`, revise a situação antes de retomar.
+
+## 13.1 Pausas Automáticas
+
+O sistema pode pausar a campanha sem ação do operador em dois casos:
+
+1. `Limite diario atingido`
+O envio para automaticamente quando a campanha alcança o máximo de envios configurado para o dia.
+
+2. `5 falhas consecutivas`
+Se cinco envios seguidos falharem, a campanha entra em pausa para evitar continuidade cega da operação.
+
+Como isso aparece na tela:
+
+- `Campanha pausada: limite diario atingido`
+- `Campanha pausada: 5 falhas consecutivas detectadas`
+
+Essas mensagens aparecem na narrativa principal da campanha.
 
 ## 14. Cancelar a Campanha
 
@@ -400,6 +541,12 @@ Os `Marcos recentes` mostram apenas sinais de controle da campanha, como:
 - campanha concluída
 - pico de falhas
 - lote processado em patamares relevantes
+
+Agora a atividade operacional também pode registrar eventos como:
+
+- espera pela janela operacional
+- pausa automática por limite diario
+- pausa automática por falhas consecutivas
 
 ## 17. Exportar Falhas
 
@@ -498,6 +645,23 @@ Verifique:
 - se o CSV está em um formato aceito
 - se o resumo de válidos e inválidos apareceu
 
+## A campanha foi iniciada, mas a leitura de resultados demorou a atualizar
+
+Isso pode acontecer logo após ações como:
+
+- `Iniciar campanha`
+- `Enviar teste`
+- `Reiniciar campanha`
+- `Retomar campanha`
+
+Nesses casos:
+
+1. Aguarde a atualização automática do console
+2. Confira a narrativa principal, que deve mostrar o processamento da ação
+3. Se necessário, abra `Atividade operacional` depois da atualização
+
+O sistema usa essa prioridade para evitar avisos falsos enquanto a ação principal ainda está sendo confirmada.
+
 ## A campanha terminou com falhas
 
 Faça nesta ordem:
@@ -511,9 +675,11 @@ Faça nesta ordem:
 
 - conecte o WhatsApp antes de abrir uma campanha crítica
 - sempre revise a mensagem antes de subir a base
+- revise as `Configuracoes operacionais` antes de iniciar o envio
 - sempre faça a simulação
 - sempre envie uma amostra antes do disparo real
 - acompanhe a área de progresso durante o envio
+- acompanhe a linha `Hoje: X / Y envios` para não perder o controle do limite do dia
 - exporte falhas ao final
 
 ## Resumo Rápido

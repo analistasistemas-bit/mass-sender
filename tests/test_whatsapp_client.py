@@ -73,6 +73,26 @@ def test_bridge_client_send_text_classifies_errors(monkeypatch):
     assert exc.value.http_status == 503
 
 
+def test_bridge_client_send_text_classifies_detached_frame_as_session_error(monkeypatch):
+    monkeypatch.setenv('WHATSAPP_PROVIDER', 'bridge')
+    monkeypatch.setenv('WA_BRIDGE_BASE_URL', 'http://bridge.local')
+
+    async def handler(_request):
+        return httpx.Response(
+            502,
+            json={'ok': False, 'message': 'Attempted to use detached Frame "frame-1".', 'state': 'ready'},
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = WhatsAppClient(transport=transport)
+
+    with pytest.raises(WhatsAppError) as exc:
+        asyncio.run(client.send_text('+5511999999999', 'oi'))
+
+    assert exc.value.error_class == 'session'
+    assert exc.value.http_status == 502
+
+
 def test_bridge_session(monkeypatch):
     monkeypatch.setenv('WHATSAPP_PROVIDER', 'bridge')
     monkeypatch.setenv('WA_BRIDGE_BASE_URL', 'http://bridge.local')

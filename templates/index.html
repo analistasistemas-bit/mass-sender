@@ -152,51 +152,64 @@
           <p class="text-sm text-slate-500">Abra uma campanha para seguir o fluxo completo sem sair do contexto operacional.</p>
         </div>
 
-        {% if campaigns %}
-        <div class="grid gap-4 xl:grid-cols-3 md:grid-cols-2">
+        <div id="campaigns-grid" class="grid gap-4 xl:grid-cols-3 md:grid-cols-2{% if not campaigns %} hidden{% endif %}">
           {% for c in campaigns %}
-          <a
-            href="/campaigns/{{ c.id }}"
+          <article
             class="group rounded-[28px] border border-white/70 bg-white/95 p-6 shadow-panel transition hover:-translate-y-1 hover:border-brand/30 hover:shadow-2xl"
+            data-campaign-card
+            data-campaign-id="{{ c.id }}"
           >
             <div class="flex items-start justify-between gap-3">
-              <div>
+              <div class="min-w-0">
                 <p class="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Campanha {{ c.id }}</p>
                 <h3 class="mt-2 font-display text-2xl text-ink">{{ c.name }}</h3>
               </div>
-              <span class="status-badge" data-state="{{ c.status }}">{{ c.status }}</span>
+              <div class="flex shrink-0 flex-col items-end gap-2 self-start">
+                <span class="status-badge" data-state="{{ c.status }}">{{ c.status }}</span>
+                {% if c.status != 'running' %}
+                <button
+                  type="button"
+                  class="card-danger-pill"
+                  data-home-action="delete-campaign"
+                  data-campaign-id="{{ c.id }}"
+                  data-campaign-name="{{ c.name }}"
+                >
+                  Excluir
+                </button>
+                {% endif %}
+              </div>
             </div>
-            <p class="mt-4 text-sm leading-6 text-slate-500">Continue o fluxo de upload, teste, envio e acompanhamento em uma unica tela.</p>
-            <dl class="mt-6 grid grid-cols-3 gap-3 text-sm">
-              <div class="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                <dt class="text-xs uppercase tracking-[0.2em] text-slate-500">Validos</dt>
-                <dd class="mt-1 text-lg font-semibold text-ink">{{ c.valid_contacts }}</dd>
+            <a href="/campaigns/{{ c.id }}" class="mt-4 block">
+              <p class="text-sm leading-6 text-slate-500">Continue o fluxo de upload, teste, envio e acompanhamento em uma unica tela.</p>
+              <dl class="mt-6 grid grid-cols-3 gap-3 text-sm">
+                <div class="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <dt class="text-xs uppercase tracking-[0.2em] text-slate-500">Validos</dt>
+                  <dd class="mt-1 text-lg font-semibold text-ink">{{ c.valid_contacts }}</dd>
+                </div>
+                <div class="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <dt class="text-xs uppercase tracking-[0.2em] text-slate-500">Enviados</dt>
+                  <dd class="mt-1 text-lg font-semibold text-ink">{{ c.sent_count }}</dd>
+                </div>
+                <div class="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <dt class="text-xs uppercase tracking-[0.2em] text-slate-500">Falhas</dt>
+                  <dd class="mt-1 text-lg font-semibold text-ink">{{ c.failed_count }}</dd>
+                </div>
+              </dl>
+              <div class="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-brand">
+                Abrir operacao
+                <span aria-hidden="true" class="transition group-hover:translate-x-1">→</span>
               </div>
-              <div class="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                <dt class="text-xs uppercase tracking-[0.2em] text-slate-500">Enviados</dt>
-                <dd class="mt-1 text-lg font-semibold text-ink">{{ c.sent_count }}</dd>
-              </div>
-              <div class="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                <dt class="text-xs uppercase tracking-[0.2em] text-slate-500">Falhas</dt>
-                <dd class="mt-1 text-lg font-semibold text-ink">{{ c.failed_count }}</dd>
-              </div>
-            </dl>
-            <div class="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-brand">
-              Abrir operacao
-              <span aria-hidden="true" class="transition group-hover:translate-x-1">→</span>
-            </div>
-          </a>
+            </a>
+          </article>
           {% endfor %}
         </div>
-        {% else %}
-        <div class="rounded-[28px] border border-dashed border-slate-300 bg-white/80 p-10 text-center shadow-panel">
+        <div id="campaigns-empty-state" class="rounded-[28px] border border-dashed border-slate-300 bg-white/80 p-10 text-center shadow-panel{% if campaigns %} hidden{% endif %}">
           <p class="text-sm font-semibold uppercase tracking-[0.3em] text-slate-500">Nenhuma campanha criada</p>
           <h3 class="mt-3 font-display text-3xl text-ink">Crie a primeira campanha para iniciar o fluxo</h3>
           <p class="mx-auto mt-4 max-w-2xl text-sm leading-6 text-slate-500">
             O console vai guiar a conexao, validacao, teste e envio sem expor botoes desnecessarios.
           </p>
         </div>
-        {% endif %}
       </section>
     </main>
 

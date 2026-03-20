@@ -102,3 +102,119 @@ def test_test_run_sends_samples_to_connected_bridge_number(monkeypatch):
         assert campaign.test_completed_at is not None
     finally:
         main.app.dependency_overrides.clear()
+
+
+def test_test_run_defaults_to_single_sample(monkeypatch):
+    session = build_session()
+    campaign = Campaign(
+        name='Teste unico',
+        message_template='Oi, {{nome}}',
+        status='ready',
+        test_completed_at=None,
+    )
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    session.add_all(
+        [
+            Contact(
+                campaign_id=campaign.id,
+                name='Alice',
+                phone_raw='81999990001',
+                phone_e164='+5581999990001',
+                email='a@teste.com',
+                status='pending',
+            ),
+            Contact(
+                campaign_id=campaign.id,
+                name='Bob',
+                phone_raw='81999990002',
+                phone_e164='+5581999990002',
+                email='b@teste.com',
+                status='pending',
+            ),
+        ]
+    )
+    session.commit()
+
+    def override_get_db():
+        try:
+            yield session
+        finally:
+            pass
+
+    fake_client = _BridgeTestClient()
+    monkeypatch.setattr(main, 'WhatsAppClient', lambda: fake_client)
+    main.app.dependency_overrides[main.get_db] = override_get_db
+    try:
+        client = TestClient(main.app)
+        client.cookies.set('mass_sender_admin', main.APP_PASSWORD)
+
+        response = client.post(f'/campaigns/{campaign.id}/test-run')
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload['ok'] is True
+        assert payload['sent'] == 1
+        assert len(fake_client.sent) == 1
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_test_run_rotates_greeting_across_repeated_attempts(monkeypatch):
+    session = build_session()
+    campaign = Campaign(
+        name='Teste rotativo',
+        message_template='Temos uma novidade para voce.',
+        status='ready',
+        test_completed_at=None,
+    )
+    session.add(campaign)
+    session.commit()
+    session.refresh(campaign)
+
+    session.add(
+        Contact(
+            campaign_id=campaign.id,
+            name='Alice',
+            phone_raw='81999990001',
+            phone_e164='+5581999990001',
+            email='a@teste.com',
+            status='pending',
+        )
+    )
+    session.commit()
+
+    def override_get_db():
+        try:
+            yield session
+        finally:
+            pass
+
+    fake_client = _BridgeTestClient()
+    monkeypatch.setattr(main, 'WhatsAppClient', lambda: fake_client)
+    main.app.dependency_overrides[main.get_db] = override_get_db
+    try:
+        client = TestClient(main.app)
+        client.cookies.set('mass_sender_admin', main.APP_PASSWORD)
+
+        for _ in range(3):
+            response = client.post(f'/campaigns/{campaign.id}/test-run', data={'sample_size': 1})
+            assert response.status_code == 200
+            assert response.json()['ok'] is True
+
+        sent_messages = [text for _, text in fake_client.sent]
+        greetings = []
+        for message in sent_messages:
+            if '\n\n' in message:
+                rendered = message.split('\n\n', 1)[1]
+            else:
+                rendered = message
+            greetings.append(rendered.split(',', 1)[0].strip())
+
+        assert len(greetings) == 3
+        assert len(set(greetings)) == 3
+        assert set(greetings) == {'Ola', 'Oi', 'Bom dia'}
+    finally:
+        main.app.dependency_overrides.clear()
